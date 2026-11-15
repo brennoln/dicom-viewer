@@ -1,7 +1,5 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-echo ========================================================
-echo   Iniciando Visualizador DICOM (Qt + DCMTK)...
-echo ========================================================
+set PATH=C:\msys64\ucrt64\bin;%PATH%
 start "" "%~dp0build\dicom_viewer.exe" %*
