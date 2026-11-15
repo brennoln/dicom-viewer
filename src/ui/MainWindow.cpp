@@ -99,7 +99,7 @@ void MainWindow::setupUi() {
     m_infoHeaderLabel = new QLabel(
         QStringLiteral("Nenhum arquivo carregado. Clique em 'Selecionar Arquivo DICOM (.dcm)...' para abrir um exame."),
         centralWidget);
-    m_infoHeaderLabel->setStyleSheet(QStringLiteral("color: #333333; font-size: 13px; padding-left: 8px;"));
+    m_infoHeaderLabel->setStyleSheet(QStringLiteral("color: #e0e0e0; font-size: 13px; padding-left: 8px;"));
     m_infoHeaderLabel->setWordWrap(true);
 
     topBarLayout->addWidget(m_openButton, 0);
