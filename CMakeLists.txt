@@ -21,8 +21,12 @@ find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Core Gui Widgets Test)
 find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Gui Widgets Test)
 find_package(DCMTK REQUIRED)
 
-# Biblioteca Core (Leitura e Processamento DICOM)
+# Biblioteca Core (Leitura, Processamento, Anonimização LGPD e Auditoria DICOM)
 add_library(dicom_core STATIC
+    src/core/AuditLogger.h
+    src/core/AuditLogger.cpp
+    src/core/DicomAnonymizer.h
+    src/core/DicomAnonymizer.cpp
     src/core/DicomImageData.h
     src/core/DicomLoader.h
     src/core/DicomLoader.cpp
@@ -119,3 +123,29 @@ target_link_libraries(tst_gui PRIVATE
 )
 
 add_test(NAME DicomViewerGuiTest COMMAND tst_gui)
+
+add_executable(tst_dicom_edge_cases
+    tests/tst_dicom_edge_cases.cpp
+)
+
+target_link_libraries(tst_dicom_edge_cases PRIVATE
+    dicom_core
+    Qt${QT_VERSION_MAJOR}::Test
+)
+
+add_test(NAME DicomEdgeCasesTest COMMAND tst_dicom_edge_cases)
+
+add_executable(tst_security
+    tests/tst_security.cpp
+)
+
+target_compile_definitions(tst_security PRIVATE
+    TEST_ASSETS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets"
+)
+
+target_link_libraries(tst_security PRIVATE
+    dicom_core
+    Qt${QT_VERSION_MAJOR}::Test
+)
+
+add_test(NAME DicomSecurityAndComplianceTest COMMAND tst_security)

@@ -1,45 +1,69 @@
 #include "ui/MainWindow.h"
+#include "core/DicomAnonymizer.h"
 
 #include <QApplication>
+#include <QDragEnterEvent>
+#include <QDropEvent>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QGraphicsLineItem>
+#include <QGraphicsSimpleTextItem>
 #include <QHBoxLayout>
+#include <QHeaderView>
 #include <QKeySequence>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QMimeData>
+#include <QMouseEvent>
 #include <QPainter>
+#include <QPen>
 #include <QResizeEvent>
 #include <QStatusBar>
 #include <QToolBar>
+#include <QTransform>
+#include <QUrl>
 #include <QVBoxLayout>
 #include <QWheelEvent>
+
+#include <algorithm>
+#include <cmath>
 
 namespace dicom {
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent) {
-    setWindowTitle(QStringLiteral("Visualizador DICOM - Qt"));
-    resize(1024, 768);
-    setMinimumSize(640, 480);
+    setWindowTitle(QStringLiteral("Visualizador DICOM Clínico - Qt"));
+    resize(1240, 840);
+    setMinimumSize(720, 520);
+    setAcceptDrops(true);
 
     setupActionsAndToolbar();
     setupUi();
+    setupMetadataDock();
 
-    statusBar()->showMessage(QStringLiteral("Pronto. Selecione um arquivo DICOM (.dcm) para visualizar."));
+    statusBar()->showMessage(QStringLiteral("Pronto. Selecione ou arraste um arquivo DICOM (.dcm) para visualizar."));
 }
 
 void MainWindow::setupActionsAndToolbar() {
-    m_openAction = new QAction(QStringLiteral("Abrir Arquivo DICOM..."), this);
+    m_openAction = new QAction(QStringLiteral("Abrir DICOM..."), this);
     m_openAction->setShortcut(QKeySequence::Open);
-    m_openAction->setStatusTip(QStringLiteral("Selecionar um arquivo DICOM (.dcm) no disco"));
     connect(m_openAction, &QAction::triggered, this, &MainWindow::onOpenFileTriggered);
 
-    m_fitAction = new QAction(QStringLiteral("Ajustar a Janela"), this);
+    m_exportImageAction = new QAction(QStringLiteral("Exportar Imagem (PNG/JPG)..."), this);
+    m_exportImageAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_E));
+    m_exportImageAction->setEnabled(false);
+    connect(m_exportImageAction, &QAction::triggered, this, &MainWindow::onExportImageTriggered);
+
+    m_exportAnonAction = new QAction(QStringLiteral("Exportar DICOM Anonimizado (LGPD)..."), this);
+    m_exportAnonAction->setEnabled(false);
+    connect(m_exportAnonAction, &QAction::triggered, this, &MainWindow::onExportAnonymizedDicomTriggered);
+
+    m_fitAction = new QAction(QStringLiteral("Ajustar"), this);
     m_fitAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_0));
     m_fitAction->setEnabled(false);
     connect(m_fitAction, &QAction::triggered, this, &MainWindow::onFitToWindow);
 
-    m_actualSizeAction = new QAction(QStringLiteral("Tamanho 100%"), this);
+    m_actualSizeAction = new QAction(QStringLiteral("100%"), this);
     m_actualSizeAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_1));
     m_actualSizeAction->setEnabled(false);
     connect(m_actualSizeAction, &QAction::triggered, this, &MainWindow::onResetZoom);
@@ -54,30 +78,82 @@ void MainWindow::setupActionsAndToolbar() {
     m_zoomOutAction->setEnabled(false);
     connect(m_zoomOutAction, &QAction::triggered, this, &MainWindow::onZoomOut);
 
+    m_invertAction = new QAction(QStringLiteral("Inverter"), this);
+    m_invertAction->setCheckable(true);
+    m_invertAction->setEnabled(false);
+    m_invertAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_I));
+    connect(m_invertAction, &QAction::toggled, this, &MainWindow::onInvertToggled);
+
+    m_rotateAction = new QAction(QStringLiteral("Girar 90°"), this);
+    m_rotateAction->setEnabled(false);
+    m_rotateAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_R));
+    connect(m_rotateAction, &QAction::triggered, this, &MainWindow::onRotate90Triggered);
+
+    m_flipHAction = new QAction(QStringLiteral("Espelhar H"), this);
+    m_flipHAction->setCheckable(true);
+    m_flipHAction->setEnabled(false);
+    connect(m_flipHAction, &QAction::triggered, this, &MainWindow::onFlipHorizontalTriggered);
+
+    m_measureAction = new QAction(QStringLiteral("Régua (mm)"), this);
+    m_measureAction->setCheckable(true);
+    m_measureAction->setEnabled(false);
+    m_measureAction->setToolTip(QStringLiteral("Clique em dois pontos na imagem para medir distância em milímetros"));
+    connect(m_measureAction, &QAction::toggled, this, &MainWindow::onMeasureModeToggled);
+
+    m_clearMeasuresAction = new QAction(QStringLiteral("Limpar Medidas"), this);
+    m_clearMeasuresAction->setEnabled(false);
+    connect(m_clearMeasuresAction, &QAction::triggered, this, &MainWindow::onClearMeasurementsTriggered);
+
+    m_toggleMetadataAction = new QAction(QStringLiteral("Metadados"), this);
+    m_toggleMetadataAction->setCheckable(true);
+    m_toggleMetadataAction->setChecked(true);
+    m_toggleMetadataAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_M));
+
     // Menu Arquivo
     QMenu* fileMenu = menuBar()->addMenu(QStringLiteral("&Arquivo"));
     fileMenu->addAction(m_openAction);
     fileMenu->addSeparator();
+    fileMenu->addAction(m_exportImageAction);
+    fileMenu->addAction(m_exportAnonAction);
+    fileMenu->addSeparator();
     QAction* exitAction = fileMenu->addAction(QStringLiteral("Sair"), this, &QWidget::close);
     exitAction->setShortcut(QKeySequence::Quit);
 
-    // Menu Visualizar
+    // Menu Visualizar / Ferramentas Clínicas
     QMenu* viewMenu = menuBar()->addMenu(QStringLiteral("&Visualizar"));
     viewMenu->addAction(m_fitAction);
     viewMenu->addAction(m_actualSizeAction);
-    viewMenu->addSeparator();
     viewMenu->addAction(m_zoomInAction);
     viewMenu->addAction(m_zoomOutAction);
+    viewMenu->addSeparator();
+    viewMenu->addAction(m_invertAction);
+    viewMenu->addAction(m_rotateAction);
+    viewMenu->addAction(m_flipHAction);
+    viewMenu->addSeparator();
+    viewMenu->addAction(m_measureAction);
+    viewMenu->addAction(m_clearMeasuresAction);
+    viewMenu->addSeparator();
+    viewMenu->addAction(m_toggleMetadataAction);
 
     // Barra de Ferramentas Principal
-    QToolBar* toolBar = addToolBar(QStringLiteral("Ferramentas"));
+    QToolBar* toolBar = addToolBar(QStringLiteral("Ferramentas Clínicas"));
     toolBar->setMovable(false);
     toolBar->addAction(m_openAction);
+    toolBar->addAction(m_exportAnonAction);
     toolBar->addSeparator();
     toolBar->addAction(m_fitAction);
     toolBar->addAction(m_actualSizeAction);
     toolBar->addAction(m_zoomInAction);
     toolBar->addAction(m_zoomOutAction);
+    toolBar->addSeparator();
+    toolBar->addAction(m_invertAction);
+    toolBar->addAction(m_rotateAction);
+    toolBar->addAction(m_flipHAction);
+    toolBar->addSeparator();
+    toolBar->addAction(m_measureAction);
+    toolBar->addAction(m_clearMeasuresAction);
+    toolBar->addSeparator();
+    toolBar->addAction(m_toggleMetadataAction);
 }
 
 void MainWindow::setupUi() {
@@ -97,7 +173,7 @@ void MainWindow::setupUi() {
     connect(m_openButton, &QPushButton::clicked, this, &MainWindow::onOpenFileTriggered);
 
     m_infoHeaderLabel = new QLabel(
-        QStringLiteral("Nenhum arquivo carregado. Clique em 'Selecionar Arquivo DICOM (.dcm)...' para abrir um exame."),
+        QStringLiteral("Nenhum arquivo carregado. Clique em 'Selecionar Arquivo DICOM (.dcm)...' ou arraste um arquivo."),
         centralWidget);
     m_infoHeaderLabel->setStyleSheet(QStringLiteral("color: #e0e0e0; font-size: 13px; padding-left: 8px;"));
     m_infoHeaderLabel->setWordWrap(true);
@@ -106,7 +182,63 @@ void MainWindow::setupUi() {
     topBarLayout->addWidget(m_infoHeaderLabel, 1);
     mainLayout->addLayout(topBarLayout);
 
-    // Banner de erro para arquivos inválidos (visível quando ocorre falha de leitura)
+    // Barra de controle de Window Level / Window Width
+    m_windowControlBar = new QWidget(centralWidget);
+    m_windowControlBar->setObjectName(QStringLiteral("windowControlBar"));
+    auto* wlLayout = new QHBoxLayout(m_windowControlBar);
+    wlLayout->setContentsMargins(6, 4, 6, 4);
+    wlLayout->setSpacing(8);
+
+    auto* wcLabel = new QLabel(QStringLiteral("Window Level (Center):"), m_windowControlBar);
+    m_wcSlider = new QSlider(Qt::Horizontal, m_windowControlBar);
+    m_wcSlider->setObjectName(QStringLiteral("wcSlider"));
+    m_wcSpinBox = new QDoubleSpinBox(m_windowControlBar);
+    m_wcSpinBox->setObjectName(QStringLiteral("wcSpinBox"));
+    m_wcSpinBox->setDecimals(1);
+    m_wcSpinBox->setRange(-32768.0, 65535.0);
+
+    auto* wwLabel = new QLabel(QStringLiteral("Window Width:"), m_windowControlBar);
+    m_wwSlider = new QSlider(Qt::Horizontal, m_windowControlBar);
+    m_wwSlider->setObjectName(QStringLiteral("wwSlider"));
+    m_wwSpinBox = new QDoubleSpinBox(m_windowControlBar);
+    m_wwSpinBox->setObjectName(QStringLiteral("wwSpinBox"));
+    m_wwSpinBox->setDecimals(1);
+    m_wwSpinBox->setRange(1.0, 65535.0);
+
+    m_resetWindowButton = new QPushButton(QStringLiteral("Resetar WL/WW"), m_windowControlBar);
+    m_resetWindowButton->setObjectName(QStringLiteral("resetWindowButton"));
+
+    wlLayout->addWidget(wcLabel);
+    wlLayout->addWidget(m_wcSlider, 1);
+    wlLayout->addWidget(m_wcSpinBox);
+    wlLayout->addSpacing(12);
+    wlLayout->addWidget(wwLabel);
+    wlLayout->addWidget(m_wwSlider, 1);
+    wlLayout->addWidget(m_wwSpinBox);
+    wlLayout->addWidget(m_resetWindowButton);
+
+    m_windowControlBar->setEnabled(false);
+    mainLayout->addWidget(m_windowControlBar);
+
+    connect(m_wcSlider, &QSlider::valueChanged, this, [this](int val) {
+        if (m_updatingWindowControls) return;
+        setWindowLevelWidth(static_cast<double>(val), m_wwSpinBox->value());
+    });
+    connect(m_wcSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double val) {
+        if (m_updatingWindowControls) return;
+        setWindowLevelWidth(val, m_wwSpinBox->value());
+    });
+    connect(m_wwSlider, &QSlider::valueChanged, this, [this](int val) {
+        if (m_updatingWindowControls) return;
+        setWindowLevelWidth(m_wcSpinBox->value(), static_cast<double>(val));
+    });
+    connect(m_wwSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double val) {
+        if (m_updatingWindowControls) return;
+        setWindowLevelWidth(m_wcSpinBox->value(), val);
+    });
+    connect(m_resetWindowButton, &QPushButton::clicked, this, &MainWindow::onResetWindowTriggered);
+
+    // Banner de erro para arquivos inválidos
     m_errorBannerLabel = new QLabel(centralWidget);
     m_errorBannerLabel->setObjectName(QStringLiteral("errorBannerLabel"));
     m_errorBannerLabel->setStyleSheet(QStringLiteral(
@@ -128,7 +260,10 @@ void MainWindow::setupUi() {
     m_graphicsView->setResizeAnchor(QGraphicsView::AnchorViewCenter);
     m_graphicsView->setAlignment(Qt::AlignCenter);
     m_graphicsView->setStyleSheet(QStringLiteral("border: 1px solid #2c2c2c; background-color: #0a0a0a;"));
+    m_graphicsView->setMouseTracking(true);
+    m_graphicsView->viewport()->setMouseTracking(true);
     m_graphicsView->viewport()->installEventFilter(this);
+    m_graphicsView->setToolTip(QStringLiteral("Roda: Zoom | Esq: Mover | Dir + arraste: WL/WW | Régua: medir em mm"));
 
     m_pixmapItem = new QGraphicsPixmapItem();
     m_pixmapItem->setTransformationMode(Qt::SmoothTransformation);
@@ -136,6 +271,44 @@ void MainWindow::setupUi() {
 
     mainLayout->addWidget(m_graphicsView, 1);
     setCentralWidget(centralWidget);
+}
+
+void MainWindow::setupMetadataDock() {
+    m_metadataDock = new QDockWidget(QStringLiteral("Metadados DICOM"), this);
+    m_metadataDock->setObjectName(QStringLiteral("metadataDock"));
+    m_metadataDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+    m_metadataDock->setMinimumWidth(290);
+
+    auto* dockContainer = new QWidget(m_metadataDock);
+    auto* dockLayout = new QVBoxLayout(dockContainer);
+    dockLayout->setContentsMargins(6, 6, 6, 6);
+    dockLayout->setSpacing(6);
+
+    m_metadataFilterEdit = new QLineEdit(dockContainer);
+    m_metadataFilterEdit->setObjectName(QStringLiteral("metadataFilterEdit"));
+    m_metadataFilterEdit->setPlaceholderText(QStringLiteral("Filtrar tags ou valores..."));
+    m_metadataFilterEdit->setClearButtonEnabled(true);
+    connect(m_metadataFilterEdit, &QLineEdit::textChanged, this, &MainWindow::onMetadataFilterChanged);
+
+    m_metadataTable = new QTableWidget(0, 3, dockContainer);
+    m_metadataTable->setObjectName(QStringLiteral("metadataTable"));
+    m_metadataTable->setHorizontalHeaderLabels({QStringLiteral("Tag"), QStringLiteral("Atributo"), QStringLiteral("Valor")});
+    m_metadataTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    m_metadataTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    m_metadataTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    m_metadataTable->verticalHeader()->setVisible(false);
+    m_metadataTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_metadataTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_metadataTable->setAlternatingRowColors(true);
+
+    dockLayout->addWidget(m_metadataFilterEdit);
+    dockLayout->addWidget(m_metadataTable, 1);
+    m_metadataDock->setWidget(dockContainer);
+
+    addDockWidget(Qt::RightDockWidgetArea, m_metadataDock);
+
+    connect(m_toggleMetadataAction, &QAction::toggled, m_metadataDock, &QDockWidget::setVisible);
+    connect(m_metadataDock, &QDockWidget::visibilityChanged, m_toggleMetadataAction, &QAction::setChecked);
 }
 
 void MainWindow::onOpenFileTriggered() {
@@ -160,6 +333,7 @@ bool MainWindow::loadDicomFile(const QString& filePath, bool showModalError) {
         m_errorBannerLabel->setText(QStringLiteral("Erro ao carregar arquivo: %1").arg(data.errorMessage));
         m_errorBannerLabel->setVisible(true);
         statusBar()->showMessage(QStringLiteral("Falha ao carregar arquivo DICOM."));
+        m_auditLogger.logEvent(QStringLiteral("OPEN_FAILED"), filePath, QStringLiteral("ERROR"), data.errorMessage);
 
         if (showModalError) {
             QMessageBox::critical(this,
@@ -169,24 +343,298 @@ bool MainWindow::loadDicomFile(const QString& filePath, bool showModalError) {
         return false;
     }
 
-    // Sucesso: limpa erros anteriores e atualiza a visualização
+    // Sucesso: limpa erros, medições e transformações visuais anteriores
     m_lastError.clear();
     m_errorBannerLabel->clear();
     m_errorBannerLabel->setVisible(false);
+    clearMeasurements();
+
+    m_currentFilePath = filePath;
     m_currentData = data;
+    m_isInverted = false;
+    m_userRotationQuarterTurns = 0;
+    m_userFlipHorizontal = false;
+    m_invertAction->setChecked(false);
+    m_flipHAction->setChecked(false);
 
-    const QPixmap pixmap = QPixmap::fromImage(data.image);
-    m_pixmapItem->setPixmap(pixmap);
-    m_graphicsScene->setSceneRect(pixmap.rect());
+    refreshDisplayedPixmap();
 
+    m_exportImageAction->setEnabled(true);
+    m_exportAnonAction->setEnabled(true);
     m_fitAction->setEnabled(true);
     m_actualSizeAction->setEnabled(true);
     m_zoomInAction->setEnabled(true);
     m_zoomOutAction->setEnabled(true);
+    m_invertAction->setEnabled(true);
+    m_rotateAction->setEnabled(true);
+    m_flipHAction->setEnabled(true);
+    m_measureAction->setEnabled(true);
+    m_clearMeasuresAction->setEnabled(true);
 
-    updateInfoPanel(filePath, data);
+    updateWindowControls(m_currentData);
+    updateMetadataTable(m_currentData.metadata);
+    updateInfoPanel(filePath, m_currentData);
     onFitToWindow();
+
+    m_auditLogger.logEvent(QStringLiteral("OPEN_SUCCESS"),
+                           filePath,
+                           QStringLiteral("OK"),
+                           QStringLiteral("%1x%2 %3").arg(data.width).arg(data.height).arg(data.modality));
     return true;
+}
+
+void MainWindow::onExportImageTriggered() {
+    if (!hasLoadedImage()) {
+        return;
+    }
+    const QString outPath = QFileDialog::getSaveFileName(
+        this,
+        QStringLiteral("Exportar Imagem para Laudo/Prontuário"),
+        QStringLiteral("exame_exportado.png"),
+        QStringLiteral("Imagem PNG (*.png);;Imagem JPEG (*.jpg *.jpeg)"));
+    if (outPath.isEmpty()) {
+        return;
+    }
+
+    if (m_pixmapItem->pixmap().save(outPath)) {
+        m_auditLogger.logEvent(QStringLiteral("EXPORT_IMAGE"), outPath, QStringLiteral("OK"));
+        statusBar()->showMessage(QStringLiteral("Imagem exportada com sucesso para: %1").arg(outPath));
+    } else {
+        m_auditLogger.logEvent(QStringLiteral("EXPORT_IMAGE"), outPath, QStringLiteral("ERROR"));
+        QMessageBox::warning(this, QStringLiteral("Erro ao Exportar"), QStringLiteral("Nao foi possivel salvar a imagem."));
+    }
+}
+
+void MainWindow::onExportAnonymizedDicomTriggered() {
+    if (!hasLoadedImage() || m_currentFilePath.isEmpty()) {
+        return;
+    }
+    const QString outPath = QFileDialog::getSaveFileName(
+        this,
+        QStringLiteral("Exportar DICOM Anonimizado (LGPD)"),
+        QStringLiteral("exame_anonimizado.dcm"),
+        QStringLiteral("Arquivo DICOM (*.dcm)"));
+    if (outPath.isEmpty()) {
+        return;
+    }
+
+    QString err;
+    if (DicomAnonymizer::anonymizeFile(m_currentFilePath, outPath, err)) {
+        m_auditLogger.logEvent(QStringLiteral("ANONYMIZE_EXPORT"), outPath, QStringLiteral("OK"));
+        statusBar()->showMessage(QStringLiteral("DICOM anonimizado (LGPD) salvo em: %1").arg(outPath));
+        QMessageBox::information(this,
+                                 QStringLiteral("Anonimização LGPD Concluída"),
+                                 QStringLiteral("Arquivo DICOM salvo sem dados pessoais do paciente."));
+    } else {
+        m_auditLogger.logEvent(QStringLiteral("ANONYMIZE_EXPORT"), outPath, QStringLiteral("ERROR"), err);
+        QMessageBox::critical(this, QStringLiteral("Erro na Anonimização"), err);
+    }
+}
+
+void MainWindow::refreshDisplayedPixmap() {
+    if (!m_currentData.isValid) {
+        return;
+    }
+
+    QImage img = m_currentData.image;
+    if (m_isInverted) {
+        img.invertPixels(QImage::InvertRgb);
+    }
+    if (m_userFlipHorizontal) {
+        QTransform flip;
+        flip.scale(-1.0, 1.0);
+        img = img.transformed(flip);
+    }
+    if (m_userRotationQuarterTurns != 0) {
+        QTransform rot;
+        rot.rotate(static_cast<qreal>(m_userRotationQuarterTurns * 90));
+        img = img.transformed(rot, Qt::SmoothTransformation);
+    }
+
+    const QPixmap pixmap = QPixmap::fromImage(img);
+    m_pixmapItem->setPixmap(pixmap);
+    m_graphicsScene->setSceneRect(pixmap.rect());
+}
+
+void MainWindow::onInvertToggled(bool checked) {
+    m_isInverted = checked;
+    refreshDisplayedPixmap();
+}
+
+void MainWindow::onRotate90Triggered() {
+    if (!hasLoadedImage()) {
+        return;
+    }
+    m_userRotationQuarterTurns = (m_userRotationQuarterTurns + 1) % 4;
+    refreshDisplayedPixmap();
+    if (m_autoFitEnabled) {
+        onFitToWindow();
+    }
+}
+
+void MainWindow::onFlipHorizontalTriggered() {
+    if (!hasLoadedImage()) {
+        return;
+    }
+    m_userFlipHorizontal = !m_userFlipHorizontal;
+    refreshDisplayedPixmap();
+}
+
+void MainWindow::onMeasureModeToggled(bool checked) {
+    m_isMeasuringMode = checked;
+    m_hasMeasureStart = false;
+    if (m_previewLineItem) {
+        m_graphicsScene->removeItem(m_previewLineItem);
+        delete m_previewLineItem;
+        m_previewLineItem = nullptr;
+    }
+    m_graphicsView->setDragMode(checked ? QGraphicsView::NoDrag : QGraphicsView::ScrollHandDrag);
+    m_graphicsView->viewport()->setCursor(checked ? Qt::CrossCursor : Qt::ArrowCursor);
+    statusBar()->showMessage(checked
+        ? QStringLiteral("Modo Régua ativo: clique no ponto inicial e depois no ponto final para medir em mm.")
+        : QStringLiteral("Modo Navegação ativo."));
+}
+
+double MainWindow::measureDistanceMm(const QPointF& p1, const QPointF& p2) {
+    const double dxMm = (p2.x() - p1.x()) * m_currentData.pixelSpacingX;
+    const double dyMm = (p2.y() - p1.y()) * m_currentData.pixelSpacingY;
+    const double distMm = std::hypot(dxMm, dyMm);
+
+    QPen pen(QColor(0, 230, 118), 2.0);
+    pen.setCosmetic(true);
+    auto* lineItem = m_graphicsScene->addLine(QLineF(p1, p2), pen);
+    lineItem->setZValue(10.0);
+
+    auto* labelItem = m_graphicsScene->addSimpleText(QStringLiteral("%1 mm").arg(distMm, 0, 'f', 1));
+    labelItem->setBrush(QColor(0, 230, 118));
+    labelItem->setFlag(QGraphicsItem::ItemIgnoresTransformations, true);
+    labelItem->setPos((p1 + p2) * 0.5);
+    labelItem->setZValue(11.0);
+
+    m_measurementItems.append(lineItem);
+    m_measurementItems.append(labelItem);
+    return distMm;
+}
+
+void MainWindow::onClearMeasurementsTriggered() {
+    clearMeasurements();
+}
+
+void MainWindow::clearMeasurements() {
+    if (m_previewLineItem) {
+        m_graphicsScene->removeItem(m_previewLineItem);
+        delete m_previewLineItem;
+        m_previewLineItem = nullptr;
+    }
+    for (QGraphicsItem* item : m_measurementItems) {
+        m_graphicsScene->removeItem(item);
+        delete item;
+    }
+    m_measurementItems.clear();
+    m_hasMeasureStart = false;
+}
+
+void MainWindow::updateWindowControls(const DicomImageData& data) {
+    m_updatingWindowControls = true;
+
+    const bool enableWl = data.isValid && data.isMonochrome && data.hasWindow;
+    m_windowControlBar->setEnabled(enableWl);
+
+    if (enableWl) {
+        const int minRange = static_cast<int>(std::floor(std::min(data.minPixelValue, data.windowCenter - data.windowWidth)));
+        const int maxRange = static_cast<int>(std::ceil(std::max(data.maxPixelValue, data.windowCenter + data.windowWidth)));
+        const int maxWidth = std::max(1, static_cast<int>(std::ceil((maxRange - minRange) * 2.0)));
+
+        m_wcSlider->setRange(minRange, maxRange);
+        m_wcSpinBox->setRange(static_cast<double>(minRange), static_cast<double>(maxRange));
+        m_wcSlider->setValue(static_cast<int>(std::lround(data.windowCenter)));
+        m_wcSpinBox->setValue(data.windowCenter);
+
+        m_wwSlider->setRange(1, maxWidth);
+        m_wwSpinBox->setRange(1.0, static_cast<double>(maxWidth));
+        m_wwSlider->setValue(std::max(1, static_cast<int>(std::lround(data.windowWidth))));
+        m_wwSpinBox->setValue(std::max(1.0, data.windowWidth));
+    }
+
+    m_updatingWindowControls = false;
+}
+
+void MainWindow::updateMetadataTable(const QVector<DicomMetadataEntry>& entries) {
+    m_metadataTable->setRowCount(0);
+    m_metadataTable->setRowCount(entries.size());
+
+    for (int i = 0; i < entries.size(); ++i) {
+        const auto& entry = entries.at(i);
+        m_metadataTable->setItem(i, 0, new QTableWidgetItem(entry.tag));
+        m_metadataTable->setItem(i, 1, new QTableWidgetItem(entry.name));
+        m_metadataTable->setItem(i, 2, new QTableWidgetItem(entry.value));
+    }
+
+    onMetadataFilterChanged(m_metadataFilterEdit->text());
+}
+
+void MainWindow::onMetadataFilterChanged(const QString& filterText) {
+    const QString needle = filterText.trimmed();
+    for (int row = 0; row < m_metadataTable->rowCount(); ++row) {
+        if (needle.isEmpty()) {
+            m_metadataTable->setRowHidden(row, false);
+            continue;
+        }
+        bool match = false;
+        for (int col = 0; col < m_metadataTable->columnCount(); ++col) {
+            if (auto* item = m_metadataTable->item(row, col)) {
+                if (item->text().contains(needle, Qt::CaseInsensitive)) {
+                    match = true;
+                    break;
+                }
+            }
+        }
+        m_metadataTable->setRowHidden(row, !match);
+    }
+}
+
+void MainWindow::setWindowLevelWidth(double center, double width) {
+    if (!m_currentData.isValid || !m_currentData.isMonochrome) {
+        return;
+    }
+    const DicomImageData updated = m_loader.applyWindowLevel(m_currentData, center, width);
+    if (!updated.isValid) {
+        return;
+    }
+
+    m_currentData = updated;
+    refreshDisplayedPixmap();
+
+    m_updatingWindowControls = true;
+    m_wcSpinBox->setValue(m_currentData.windowCenter);
+    m_wcSlider->setValue(static_cast<int>(std::lround(m_currentData.windowCenter)));
+    m_wwSpinBox->setValue(m_currentData.windowWidth);
+    m_wwSlider->setValue(std::max(1, static_cast<int>(std::lround(m_currentData.windowWidth))));
+    m_updatingWindowControls = false;
+
+    statusBar()->showMessage(
+        QStringLiteral("Window Level: %1 | Window Width: %2")
+            .arg(m_currentData.windowCenter, 0, 'f', 1)
+            .arg(m_currentData.windowWidth, 0, 'f', 1));
+}
+
+void MainWindow::resetWindowLevelWidth() {
+    onResetWindowTriggered();
+}
+
+void MainWindow::onResetWindowTriggered() {
+    if (!m_currentData.isValid || !m_currentData.isMonochrome) {
+        return;
+    }
+    const DicomImageData updated = m_loader.resetWindowLevel(m_currentData);
+    if (!updated.isValid) {
+        return;
+    }
+    m_currentData = updated;
+    refreshDisplayedPixmap();
+    updateWindowControls(m_currentData);
+
+    statusBar()->showMessage(QStringLiteral("Janelamento padrão (VOI LUT / DICOM) restaurado."));
 }
 
 void MainWindow::updateInfoPanel(const QString& filePath, const DicomImageData& data) {
@@ -208,7 +656,7 @@ void MainWindow::updateInfoPanel(const QString& filePath, const DicomImageData& 
     }
 
     m_infoHeaderLabel->setText(details.join(QStringLiteral(" &nbsp;|&nbsp; ")));
-    setWindowTitle(QStringLiteral("Visualizador DICOM - %1 (%2x%3)")
+    setWindowTitle(QStringLiteral("Visualizador DICOM Clínico - %1 (%2x%3)")
                        .arg(fi.fileName())
                        .arg(data.width)
                        .arg(data.height));
@@ -261,16 +709,111 @@ void MainWindow::resizeEvent(QResizeEvent* event) {
 }
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
-    if (watched == m_graphicsView->viewport() && event->type() == QEvent::Wheel && hasLoadedImage()) {
-        auto* wheelEvent = static_cast<QWheelEvent*>(event);
-        if (wheelEvent->angleDelta().y() != 0) {
-            m_autoFitEnabled = false;
-            const double factor = (wheelEvent->angleDelta().y() > 0) ? 1.15 : (1.0 / 1.15);
-            applyZoom(factor);
-            return true;
+    if (watched == m_graphicsView->viewport() && hasLoadedImage()) {
+        if (event->type() == QEvent::Wheel) {
+            auto* wheelEvent = static_cast<QWheelEvent*>(event);
+            if (wheelEvent->angleDelta().y() != 0) {
+                m_autoFitEnabled = false;
+                const double factor = (wheelEvent->angleDelta().y() > 0) ? 1.15 : (1.0 / 1.15);
+                applyZoom(factor);
+                return true;
+            }
+        } else if (event->type() == QEvent::MouseButtonPress) {
+            auto* mouseEvent = static_cast<QMouseEvent*>(event);
+            if (mouseEvent->button() == Qt::LeftButton && m_isMeasuringMode) {
+                const QPointF scenePos = m_graphicsView->mapToScene(mouseEvent->pos());
+                if (!m_hasMeasureStart) {
+                    m_measureStartScene = scenePos;
+                    m_hasMeasureStart = true;
+                    QPen previewPen(QColor(255, 235, 59), 1.5, Qt::DashLine);
+                    previewPen.setCosmetic(true);
+                    m_previewLineItem = m_graphicsScene->addLine(QLineF(scenePos, scenePos), previewPen);
+                } else {
+                    if (m_previewLineItem) {
+                        m_graphicsScene->removeItem(m_previewLineItem);
+                        delete m_previewLineItem;
+                        m_previewLineItem = nullptr;
+                    }
+                    const double distMm = measureDistanceMm(m_measureStartScene, scenePos);
+                    m_hasMeasureStart = false;
+                    statusBar()->showMessage(QStringLiteral("Medição registrada: %1 mm").arg(distMm, 0, 'f', 2));
+                }
+                return true;
+            }
+            if (mouseEvent->button() == Qt::RightButton && m_currentData.isMonochrome) {
+                m_isAdjustingWindow = true;
+                m_lastMousePos = mouseEvent->pos();
+                m_graphicsView->viewport()->setCursor(Qt::SizeAllCursor);
+                return true;
+            }
+        } else if (event->type() == QEvent::MouseMove) {
+            auto* mouseEvent = static_cast<QMouseEvent*>(event);
+            if (m_isMeasuringMode && m_hasMeasureStart && m_previewLineItem) {
+                const QPointF scenePos = m_graphicsView->mapToScene(mouseEvent->pos());
+                m_previewLineItem->setLine(QLineF(m_measureStartScene, scenePos));
+                const double distMm = std::hypot(
+                    (scenePos.x() - m_measureStartScene.x()) * m_currentData.pixelSpacingX,
+                    (scenePos.y() - m_measureStartScene.y()) * m_currentData.pixelSpacingY);
+                statusBar()->showMessage(QStringLiteral("Medindo: %1 mm").arg(distMm, 0, 'f', 1));
+                return true;
+            }
+            if (m_isAdjustingWindow) {
+                const QPoint delta = mouseEvent->pos() - m_lastMousePos;
+                m_lastMousePos = mouseEvent->pos();
+
+                const double dynamicStep = std::max(1.0, (m_currentData.maxPixelValue - m_currentData.minPixelValue) / 500.0);
+                const double newWidth = std::max(1.0, m_currentData.windowWidth + delta.x() * dynamicStep);
+                const double newCenter = m_currentData.windowCenter + delta.y() * dynamicStep;
+                setWindowLevelWidth(newCenter, newWidth);
+                return true;
+            }
+            // Leitura clínica de intensidade / HU sob o cursor
+            const QPointF scenePos = m_graphicsView->mapToScene(mouseEvent->pos());
+            const int px = static_cast<int>(std::floor(scenePos.x()));
+            const int py = static_cast<int>(std::floor(scenePos.y()));
+            double pixelVal = 0.0;
+            if (m_userRotationQuarterTurns == 0 && !m_userFlipHorizontal &&
+                DicomLoader::samplePixelValue(m_currentData, px, py, pixelVal)) {
+                statusBar()->showMessage(
+                    QStringLiteral("Pos: (%1, %2) | Valor Calibrado: %3 | WL: %4 | WW: %5")
+                        .arg(px)
+                        .arg(py)
+                        .arg(pixelVal, 0, 'f', 1)
+                        .arg(m_currentData.windowCenter, 0, 'f', 1)
+                        .arg(m_currentData.windowWidth, 0, 'f', 1));
+            }
+        } else if (event->type() == QEvent::MouseButtonRelease && m_isAdjustingWindow) {
+            auto* mouseEvent = static_cast<QMouseEvent*>(event);
+            if (mouseEvent->button() == Qt::RightButton) {
+                m_isAdjustingWindow = false;
+                m_graphicsView->viewport()->setCursor(m_isMeasuringMode ? Qt::CrossCursor : Qt::ArrowCursor);
+                return true;
+            }
         }
     }
     return QMainWindow::eventFilter(watched, event);
+}
+
+void MainWindow::dragEnterEvent(QDragEnterEvent* event) {
+    if (event->mimeData()->hasUrls()) {
+        const QList<QUrl> urls = event->mimeData()->urls();
+        if (!urls.isEmpty() && urls.first().isLocalFile()) {
+            event->acceptProposedAction();
+            return;
+        }
+    }
+    QMainWindow::dragEnterEvent(event);
+}
+
+void MainWindow::dropEvent(QDropEvent* event) {
+    const QList<QUrl> urls = event->mimeData()->urls();
+    if (!urls.isEmpty() && urls.first().isLocalFile()) {
+        const QString filePath = urls.first().toLocalFile();
+        event->acceptProposedAction();
+        loadDicomFile(filePath, true);
+        return;
+    }
+    QMainWindow::dropEvent(event);
 }
 
 bool MainWindow::hasLoadedImage() const {
@@ -291,7 +834,7 @@ QImage MainWindow::displayedImage() const {
     return m_pixmapItem->pixmap().toImage();
 }
 
-QString MainWindow::lastErrorMessage() const {
+const QString& MainWindow::lastErrorMessage() const {
     return m_lastError;
 }
 
@@ -301,6 +844,22 @@ QString MainWindow::statusSummaryText() const {
 
 bool MainWindow::isErrorBannerVisible() const {
     return m_errorBannerLabel && m_errorBannerLabel->isVisible();
+}
+
+double MainWindow::currentWindowCenter() const {
+    return m_currentData.windowCenter;
+}
+
+double MainWindow::currentWindowWidth() const {
+    return m_currentData.windowWidth;
+}
+
+int MainWindow::metadataRowCount() const {
+    return m_metadataTable ? m_metadataTable->rowCount() : 0;
+}
+
+bool MainWindow::isMetadataPanelVisible() const {
+    return m_metadataDock && m_metadataDock->isVisible();
 }
 
 } // namespace dicom

@@ -17,7 +17,7 @@ private slots:
 
     void testMainWindowInstantiation() {
         dicom::MainWindow window;
-        QCOMPARE(window.windowTitle(), QStringLiteral("Visualizador DICOM - Qt"));
+        QCOMPARE(window.windowTitle(), QStringLiteral("Visualizador DICOM Clínico - Qt"));
         QVERIFY(window.width() >= 800);
         QVERIFY(window.height() >= 600);
     }

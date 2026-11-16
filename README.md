@@ -24,6 +24,20 @@ Aplicação desenvolvida para o Teste Técnico de Desenvolvedor C++ (Visualizaç
 
 ---
 
+## 🏥 Diferenciais Clínicos e Segurança (LGPD)
+
+- **Window Level / Window Width (WL/WW) em Tempo Real**: Sliders, SpinBoxes e arraste com botão direito do mouse, além de botão de Reset para restaurar a `VOI LUT` original do DICOM.
+- **Painel Lateral de Metadados DICOM**: Tabela filtrável em tempo real por tag, atributo ou valor.
+- **Ferramentas Clínicas**: Régua de medição física em milímetros (`mm`), leitura de intensidade calibrada / Hounsfield Units (`HU`) sob o cursor, inversão de contraste (negativo), rotação 90° e espelhamento horizontal.
+- **Suporte a Imagens RGB**: Renderização de imagens `RGB` (*interleaved* e *planar*) além de `MONOCHROME1`/`MONOCHROME2`.
+- **Segurança & Conformidade LGPD**:
+  - Proteção anti-DoS contra *Decompression Bomb* (limites de dimensões e memória antes da alocação).
+  - Exportação DICOM anonimizada (`DicomAnonymizer`) removendo PHI e regenerando UIDs.
+  - Trilha de auditoria local (`AuditLogger`) e exportação de imagem PNG/JPG para laudos.
+- **Relatório Técnico Completo**: Consulte [docs/RELATORIO_QUALIDADE_E_SEGURANCA.md](docs/RELATORIO_QUALIDADE_E_SEGURANCA.md).
+
+---
+
 ## 🛠️ Tecnologias e Bibliotecas Utilizadas
 
 - **Linguagem**: C++17
@@ -96,7 +110,7 @@ Para executar todos os testes de programação com relatório detalhado:
 ctest --test-dir build --output-on-failure -V
 ```
 
-Todas as 3 suítes de testes automatizados (`EnvironmentAndToolchainTest`, `DicomLoaderCoreTest` e `DicomViewerGuiTest`) são executadas e verificam o funcionamento sem intervenção manual.
+Todas as 5 suítes de testes automatizados (`EnvironmentAndToolchainTest`, `DicomLoaderCoreTest`, `DicomViewerGuiTest`, `DicomEdgeCasesTest` e `DicomSecurityAndComplianceTest`) são executadas e verificam o funcionamento, casos de borda e segurança sem intervenção manual.
 
 ---
 
