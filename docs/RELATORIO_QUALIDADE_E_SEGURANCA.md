@@ -1,7 +1,7 @@
 # Relatório Técnico de Qualidade, Segurança e Testes — Visualizador DICOM Clínico
 
 **Data:** 2026-11-16  
-**Stack:** C++17 (GCC 16.2.0 UCRT64) • Qt 6.12.0 (Widgets + Test) • DCMTK 3.7.0 • CMake / Ninja / CTest • Cppcheck  
+**Stack:** C++17 (GCC 16.2.0 UCRT64) • Qt 6.12.0 (Widgets + Concurrent + Test) • DCMTK 3.7.0 • CMake / Ninja / CTest • Cppcheck  
 
 ---
 
@@ -29,7 +29,7 @@ Foram implementadas defesas específicas contra vulnerabilidades históricas de 
 1. **Proteção contra DoS / Exaustão de Memória (`DicomLoader`)**:
    - Validação prévia de dimensões máximas (`16384 x 16384` px) e teto de `100 Megapixels` antes da alocação de buffers de imagem.
    - Limite de `512 MB` para carregamento de streams e validação estrita de `SamplesPerPixel` (`1`, `3` ou `4`).
-   - Processamento isolado do frame inicial (`fcount = 1`) em exames multi-frame para evitar consumo excessivo de RAM.
+   - Processamento isolado por frame (`fcount = 1`) em exames multi-frame para evitar consumo excessivo de RAM.
 2. **Anonimização Irreversível LGPD (`DicomAnonymizer`)**:
    - Remoção/substituição de tags de PHI (*Protected Health Information*): `PatientName`, `PatientID`, `PatientBirthDate`, `PatientAddress`, `PatientSex`, `PatientAge`, `ReferringPhysicianName`, `InstitutionName`, `OperatorsName`, `AccessionNumber`, `StudyID`, etc.
    - Regeneração automática de `StudyInstanceUID`, `SeriesInstanceUID` e `SOPInstanceUID` e marcação padrão DICOM (`PatientIdentityRemoved = YES`, `DeidentificationMethod = LGPD_BASIC_PROFILE`).
@@ -42,26 +42,27 @@ Foram implementadas defesas específicas contra vulnerabilidades históricas de 
 
 ---
 
-## 3. Resultados da Análise Estática de Código (`Cppcheck`)
+## 3. Resultados da Análise Estática e Compilação Estrita
 
-**Comando executado:**
-```bash
-cppcheck --enable=warning,performance,portability --library=qt --std=c++17 --error-exitcode=1 --suppress=missingIncludeSystem -I src src
-```
-
-- **Arquivos analisados:** `AuditLogger.cpp`, `DicomAnonymizer.cpp`, `DicomLoader.cpp`, `main.cpp`, `MainWindow.cpp` (e respectivos headers).
-- **Resultado:** **0 erros**, **0 avisos de segurança**, **0 avisos de portabilidade**, **0 avisos de performance** (código de saída `0`).
+- **Flags do Compilador (`GCC 16.2.0`):** `-std=c++17 -Wall -Wextra -Wpedantic` habilitadas em `dicom_core` e `dicom_ui` com **0 warnings**.
+- **Análise Estática (`Cppcheck`):**
+  ```bash
+  cppcheck --enable=warning,performance,portability --library=qt --std=c++17 --error-exitcode=1 --suppress=missingIncludeSystem -I src src
+  ```
+  - **Arquivos analisados:** `AuditLogger.cpp`, `DicomAnonymizer.cpp`, `DicomLoader.cpp`, `main.cpp`, `MainWindow.cpp` (e respectivos headers).
+  - **Resultado:** **0 erros**, **0 avisos de segurança**, **0 avisos de portabilidade**, **0 avisos de performance** (código de saída `0`).
 
 ---
 
 ## 4. Resultados das Suítes de Testes Automatizados (`CTest + QtTest`)
 
-**Execução completa (`ctest --output-on-failure`):** **5/5 suítes aprovadas (100%) em 1.96s**.
+**Execução completa (`ctest --output-on-failure`):** **6/6 suítes aprovadas (100%) em 2.32s**.
 
 | # | Suíte (`CTest`) | Tempo | Escopo Verificado | Status |
 | :-: | :--- | :-: | :--- | :-: |
-| 1 | `EnvironmentAndToolchainTest` | 0.36s | Padrão C++17 (`__cplusplus >= 201703L`), dicionário DCMTK carregado, instanciação da `MainWindow`. | **PASSED** |
+| 1 | `EnvironmentAndToolchainTest` | 0.24s | Padrão C++17 (`__cplusplus >= 201703L`), dicionário DCMTK carregado, instanciação da `MainWindow`. | **PASSED** |
 | 2 | `DicomLoaderCoreTest` | 0.22s | Erros em arquivos vazios/inexistentes/corrompidos/sem `PixelData`, `MONOCHROME1` 16-bit, `MONOCHROME2` stride não múltiplo de 4, `FieldOfViewRotation`, `PixelSpacing` não-quadrado e validação pixel a pixel de `anonymized_mamo.dcm` (`2394x2850`). | **PASSED** |
-| 3 | `DicomViewerGuiTest` | 0.91s | Estado inicial da GUI, diálogo modal de erro + banner visual, recuperação após erro, filtro de metadados, WL/WW + reset de `VOI LUT`, inversão de contraste, rotação 90°, espelhamento horizontal e medição física em `mm`. | **PASSED** |
-| 4 | `DicomEdgeCasesTest` | 0.18s | CT 16-bit *Signed* com valores negativos + `RescaleSlope/Intercept`, fallback de `WindowWidth = 0` para `MinMax`, `RGB` *interleaved* e *planar*, `TransferSyntax` (Implicit LE, Explicit LE/BE), multi-frame, imagem `1x1`, arquivo truncado, caminho Unicode acentuado e `samplePixelValue`. | **PASSED** |
-| 5 | `DicomSecurityAndComplianceTest` | 0.28s | Proteção contra *Decompression Bomb* (`50000x50000`), rejeição de `SamplesPerPixel = 99`, **25 testes de Fuzzing** (mutações aleatórias de stream DICOM + cabeçalho PE falso `"MZ"`), validação completa de remoção de PHI na anonimização LGPD e integridade/sanitização do `AuditLogger`. | **PASSED** |
+| 3 | `DicomViewerGuiTest` | 0.75s | Estado inicial da GUI, diálogo modal de erro + banner visual, recuperação após erro, filtro de metadados, WL/WW + reset de `VOI LUT`, inversão de contraste, rotação 90°, espelhamento horizontal e medição física em `mm`. | **PASSED** |
+| 4 | `DicomEdgeCasesTest` | 0.22s | CT 16-bit *Signed* com valores negativos + `RescaleSlope/Intercept`, fallback de `WindowWidth = 0` para `MinMax`, `RGB` *interleaved* e *planar*, `TransferSyntax` (Implicit LE, Explicit LE/BE), multi-frame, imagem `1x1`, arquivo truncado, caminho Unicode acentuado e `samplePixelValue`. | **PASSED** |
+| 5 | `DicomSecurityAndComplianceTest` | 0.28s | Proteção contra *Decompression Bomb* (`50000x50000`), rejeição de `SamplesPerPixel = 99`, **25 testes de Fuzzing** (mutações aleatórias de stream DICOM + cabeçalho PE falso `"MZ"`), validação completa de remoção de PHI (LGPD) e integridade/sanitização do `AuditLogger`. | **PASSED** |
+| 6 | `CppRecruiterEvaluationTest` | 0.60s | RAII & *Move Semantics* (`shared_ptr` lifetime após destruição do `DicomLoader`), **concorrência em 8 threads paralelas** (`QtConcurrent`), navegação multi-frame (5 frames + bounds), estatísticas quantitativas de ROI (Média, DP, Área `mm²`), carregamento assíncrono na GUI + presets CT + benchmark `QBENCHMARK` (`4.1e-04 ms/iter` em 131.072 iterações). | **PASSED** |
