@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <mutex>
 
 #ifdef _WIN32
@@ -35,6 +36,7 @@ namespace dicom {
 struct DicomRenderContext {
     std::shared_ptr<DcmFileFormat> fileFormat;
     std::shared_ptr<DicomImage> dicomImage;
+    E_TransferSyntax xfer = EXS_Unknown;
     int rotationDegrees = 0;
     bool horizontalFlip = false;
     double pixelSpacingY = 1.0;
@@ -49,11 +51,6 @@ namespace {
 
 std::once_flag g_codecsInitFlag;
 
-/**
- * @brief Converte um caminho QString para uma representação nativa segura no Windows
- * (utilizando 8.3 Short Path quando disponível para evitar problemas de codepage ANSI
- * com caracteres acentuados no DCMTK).
- */
 QByteArray toDcmtkSafePath(const QString& filePath) {
     const QString nativePath = QDir::toNativeSeparators(filePath);
 #ifdef _WIN32
@@ -105,7 +102,6 @@ QVector<DicomMetadataEntry> extractMetadata(DcmDataset* dataset, const DicomImag
         return entries;
     }
 
-    // Informações do Paciente e Estudo
     addMetadataIfPresent(entries, dataset, DCM_PatientName, QStringLiteral("Nome do Paciente"));
     addMetadataIfPresent(entries, dataset, DCM_PatientID, QStringLiteral("ID do Paciente"));
     addMetadataIfPresent(entries, dataset, DCM_PatientSex, QStringLiteral("Sexo"));
@@ -116,7 +112,6 @@ QVector<DicomMetadataEntry> extractMetadata(DcmDataset* dataset, const DicomImag
     addMetadataIfPresent(entries, dataset, DCM_StudyDescription, QStringLiteral("Descrição do Estudo"));
     addMetadataIfPresent(entries, dataset, DCM_SeriesDescription, QStringLiteral("Descrição da Série"));
 
-    // Equipamento e Aquisição
     addMetadataIfPresent(entries, dataset, DCM_Modality, QStringLiteral("Modalidade"));
     addMetadataIfPresent(entries, dataset, DCM_Manufacturer, QStringLiteral("Fabricante"));
     addMetadataIfPresent(entries, dataset, DCM_ManufacturerModelName, QStringLiteral("Modelo"));
@@ -124,11 +119,16 @@ QVector<DicomMetadataEntry> extractMetadata(DcmDataset* dataset, const DicomImag
     addMetadataIfPresent(entries, dataset, DCM_ViewPosition, QStringLiteral("Posição / Incidência"));
     addMetadataIfPresent(entries, dataset, DCM_ImageLaterality, QStringLiteral("Lateralidade"));
     addMetadataIfPresent(entries, dataset, DCM_PatientOrientation, QStringLiteral("Orientação do Paciente"));
+    addMetadataIfPresent(entries, dataset, DCM_SliceThickness, QStringLiteral("Espessura de Corte (mm)"));
 
-    // Parâmetros Técnicos da Imagem
     entries.append({QStringLiteral("(0028,0011/0010)"),
                     QStringLiteral("Dimensões (Col x Lin)"),
                     QStringLiteral("%1 x %2 px").arg(info.width).arg(info.height)});
+    if (info.frameCount > 1) {
+        entries.append({formatTagKey(DCM_NumberOfFrames),
+                        QStringLiteral("Total de Frames"),
+                        QString::number(info.frameCount)});
+    }
     entries.append({formatTagKey(DCM_PhotometricInterpretation),
                     QStringLiteral("Interpretação Fotométrica"),
                     info.photometricInterpretation});
@@ -171,7 +171,7 @@ QImage renderDicomImageToQImage(DicomImage& dicomImage,
         return {};
     }
 
-    const void* rawOutput = dicomImage.getOutputData(8 /* 8 bits por amostra para exibição */);
+    const void* rawOutput = dicomImage.getOutputData(8);
     if (!rawOutput) {
         outError = QStringLiteral("Falha ao renderizar os pixels da imagem DICOM.");
         return {};
@@ -185,7 +185,6 @@ QImage renderDicomImageToQImage(DicomImage& dicomImage,
             return {};
         }
         const auto* srcPixels = static_cast<const uchar*>(rawOutput);
-        // Copia linha por linha respeitando o bytesPerLine (alinhamento de 4 bytes do QImage)
         for (int y = 0; y < imgHeight; ++y) {
             std::memcpy(renderedImage.scanLine(y),
                         srcPixels + static_cast<size_t>(y) * static_cast<size_t>(imgWidth),
@@ -300,6 +299,19 @@ void syncWindowMetrics(DicomImage& dicomImage, DicomImageData& data) {
     }
 }
 
+double readCalibratedPixelAt(const DiPixel& interData, size_t idx) {
+    const void* raw = interData.getData();
+    switch (interData.getRepresentation()) {
+    case EPR_Uint8:  return static_cast<double>(static_cast<const Uint8*>(raw)[idx]);
+    case EPR_Sint8:  return static_cast<double>(static_cast<const Sint8*>(raw)[idx]);
+    case EPR_Uint16: return static_cast<double>(static_cast<const Uint16*>(raw)[idx]);
+    case EPR_Sint16: return static_cast<double>(static_cast<const Sint16*>(raw)[idx]);
+    case EPR_Uint32: return static_cast<double>(static_cast<const Uint32*>(raw)[idx]);
+    case EPR_Sint32: return static_cast<double>(static_cast<const Sint32*>(raw)[idx]);
+    default:         return 0.0;
+    }
+}
+
 } // namespace
 
 DicomLoader::DicomLoader() {
@@ -318,7 +330,7 @@ void DicomLoader::ensureCodecsRegistered() {
     });
 }
 
-DicomImageData DicomLoader::loadFile(const QString& filePath) const {
+DicomImageData DicomLoader::loadFile(const QString& filePath, int frameIndex) const {
     ensureCodecsRegistered();
 
     DicomImageData result;
@@ -349,7 +361,6 @@ DicomImageData DicomLoader::loadFile(const QString& filePath) const {
     auto fileFormat = std::make_shared<DcmFileFormat>();
     OFCondition loadStatus = fileFormat->loadFile(OFFilename(safePath.constData()));
 
-    // Fallback via QFile + DcmInputBufferStream para caminhos Unicode quando 8.3 short paths não estão disponíveis
     if (loadStatus.bad()) {
         QFile file(fileInfo.absoluteFilePath());
         if (file.open(QIODevice::ReadOnly)) {
@@ -378,7 +389,6 @@ DicomImageData DicomLoader::loadFile(const QString& filePath) const {
         return result;
     }
 
-    // Verifica a existência de dados de pixel e dimensões válidas
     Uint16 rows = 0;
     Uint16 cols = 0;
     const bool hasRows = dataset->findAndGetUint16(DCM_Rows, rows).good();
@@ -388,9 +398,8 @@ DicomImageData DicomLoader::loadFile(const QString& filePath) const {
         return result;
     }
 
-    // Proteção de segurança contra Decompression Bomb / exaustão de memória (DoS)
     constexpr Uint16 kMaxDimension = 16384;
-    constexpr quint64 kMaxPixelCount = 100000000ULL; // 100 Megapixels
+    constexpr quint64 kMaxPixelCount = 100000000ULL;
     const quint64 totalPixels = static_cast<quint64>(rows) * static_cast<quint64>(cols);
     if (rows > kMaxDimension || cols > kMaxDimension || totalPixels > kMaxPixelCount) {
         result.errorMessage = QStringLiteral("Dimensoes de imagem (%1x%2) excedem o limite seguro de alocacao.")
@@ -414,7 +423,6 @@ DicomImageData DicomLoader::loadFile(const QString& filePath) const {
         return result;
     }
 
-    // Extrai metadados de imagem e orientação
     Uint16 bitsAllocated = 0;
     Uint16 bitsStored = 0;
     Uint16 pixelRep = 0;
@@ -422,6 +430,20 @@ DicomImageData DicomLoader::loadFile(const QString& filePath) const {
     dataset->findAndGetUint16(DCM_BitsStored, bitsStored);
     dataset->findAndGetUint16(DCM_PixelRepresentation, pixelRep);
 
+    Sint32 numberOfFrames = 1;
+    if (dataset->findAndGetSint32(DCM_NumberOfFrames, numberOfFrames).bad() || numberOfFrames < 1) {
+        numberOfFrames = 1;
+    }
+
+    if (frameIndex < 0 || frameIndex >= numberOfFrames) {
+        result.errorMessage = QStringLiteral("Indice de frame (%1) fora do intervalo valido (0..%2).")
+                                  .arg(frameIndex)
+                                  .arg(numberOfFrames - 1);
+        return result;
+    }
+
+    result.frameCount = static_cast<int>(numberOfFrames);
+    result.currentFrame = frameIndex;
     result.bitsAllocated = static_cast<int>(bitsAllocated);
     result.bitsStored = static_cast<int>(bitsStored > 0 ? bitsStored : bitsAllocated);
     result.isSigned = (pixelRep == 1);
@@ -438,7 +460,6 @@ DicomImageData DicomLoader::loadFile(const QString& filePath) const {
     DcmXfer xferObj(xfer);
     result.transferSyntaxUid = QString::fromLatin1(xferObj.getXferID());
 
-    // Extrai Pixel Spacing (Row Spacing \ Column Spacing) ou fallback para ImagerPixelSpacing
     Float64 spacingY = 0.0;
     Float64 spacingX = 0.0;
     if (dataset->findAndGetFloat64(DCM_PixelSpacing, spacingY, 0).good() &&
@@ -453,7 +474,6 @@ DicomImageData DicomLoader::loadFile(const QString& filePath) const {
         result.pixelSpacingX = spacingX;
     }
 
-    // Extrai Image Orientation (Patient) se presente (6 cossenos diretores)
     bool allCosinesFound = true;
     for (unsigned long i = 0; i < 6; ++i) {
         Float64 cosine = 0.0;
@@ -466,8 +486,8 @@ DicomImageData DicomLoader::loadFile(const QString& filePath) const {
     }
     result.hasOrientation = allCosinesFound;
 
-    // Constrói e descomprime a imagem via DicomImage (apenas frame inicial para segurança em multi-frame)
-    auto dicomImage = std::make_shared<DicomImage>(fileFormat.get(), xfer, 0UL /* flags */, 0UL /* fstart */, 1UL /* fcount */);
+    auto dicomImage = std::make_shared<DicomImage>(
+        fileFormat.get(), xfer, 0UL, static_cast<unsigned long>(frameIndex), 1UL);
     if (dicomImage->getStatus() != EIS_Normal) {
         result.errorMessage = QStringLiteral("Erro ao processar a imagem DICOM: %1")
                                   .arg(QString::fromLatin1(DicomImage::getString(dicomImage->getStatus())));
@@ -477,6 +497,7 @@ DicomImageData DicomLoader::loadFile(const QString& filePath) const {
     auto ctx = std::make_shared<DicomRenderContext>();
     ctx->fileFormat = fileFormat;
     ctx->dicomImage = dicomImage;
+    ctx->xfer = xfer;
     ctx->pixelSpacingY = result.pixelSpacingY;
     ctx->pixelSpacingX = result.pixelSpacingX;
 
@@ -515,6 +536,72 @@ DicomImageData DicomLoader::loadFile(const QString& filePath) const {
     return result;
 }
 
+DicomImageData DicomLoader::loadFrame(const DicomImageData& baseData, int frameIndex) const {
+    DicomImageData updated = baseData;
+    if (!baseData.isValid || !baseData.renderContext || !baseData.renderContext->fileFormat) {
+        updated.isValid = false;
+        updated.errorMessage = QStringLiteral("Nenhum exame carregado para navegar entre frames.");
+        return updated;
+    }
+
+    if (frameIndex < 0 || frameIndex >= baseData.frameCount) {
+        updated.isValid = false;
+        updated.errorMessage = QStringLiteral("Indice de frame (%1) fora do intervalo valido (0..%2).")
+                                   .arg(frameIndex)
+                                   .arg(baseData.frameCount - 1);
+        return updated;
+    }
+
+    auto newCtx = std::make_shared<DicomRenderContext>(*baseData.renderContext);
+    auto newDcmImg = std::make_shared<DicomImage>(
+        newCtx->fileFormat.get(),
+        newCtx->xfer,
+        0UL,
+        static_cast<unsigned long>(frameIndex),
+        1UL);
+
+    if (newDcmImg->getStatus() != EIS_Normal) {
+        updated.isValid = false;
+        updated.errorMessage = QStringLiteral("Erro ao decodificar frame %1: %2")
+                                   .arg(frameIndex)
+                                   .arg(QString::fromLatin1(DicomImage::getString(newDcmImg->getStatus())));
+        return updated;
+    }
+
+    newCtx->dicomImage = newDcmImg;
+    if (updated.isMonochrome) {
+        if (updated.hasWindow && updated.windowWidth > 0.0) {
+            if (newDcmImg->setWindow(updated.windowCenter, updated.windowWidth) == 0) {
+                applyDefaultVoi(*newDcmImg, *newCtx);
+            }
+        } else {
+            applyDefaultVoi(*newDcmImg, *newCtx);
+            syncWindowMetrics(*newDcmImg, updated);
+        }
+    }
+
+    QString renderError;
+    const QImage rendered = renderDicomImageToQImage(*newDcmImg,
+                                                     newCtx->rotationDegrees,
+                                                     newCtx->horizontalFlip,
+                                                     newCtx->pixelSpacingY,
+                                                     newCtx->pixelSpacingX,
+                                                     renderError);
+    if (rendered.isNull()) {
+        updated.isValid = false;
+        updated.errorMessage = renderError;
+        return updated;
+    }
+
+    updated.image = rendered;
+    updated.width = rendered.width();
+    updated.height = rendered.height();
+    updated.currentFrame = frameIndex;
+    updated.renderContext = newCtx;
+    updated.isValid = true;
+    return updated;
+}
+
 DicomImageData DicomLoader::applyWindowLevel(const DicomImageData& baseData,
                                              double windowCenter,
                                              double windowWidth) const {
@@ -526,7 +613,7 @@ DicomImageData DicomLoader::applyWindowLevel(const DicomImageData& baseData,
     }
 
     if (!baseData.isMonochrome) {
-        return updated; // WL/WW se aplica a imagens monocromáticas
+        return updated;
     }
 
     const double safeWidth = std::max(1.0, windowWidth);
@@ -613,40 +700,72 @@ bool DicomLoader::samplePixelValue(const DicomImageData& data, int x, int y, dou
         return false;
     }
     const DiPixel* interData = dcmImg.getInterData();
-    if (!interData || interData->getCount() == 0) {
+    if (!interData || interData->getCount() == 0 || !interData->getData()) {
         return false;
     }
     const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(w) + static_cast<size_t>(x);
     if (idx >= interData->getCount()) {
         return false;
     }
-    const void* raw = interData->getData();
-    if (!raw) {
-        return false;
+
+    outValue = readCalibratedPixelAt(*interData, idx);
+    return true;
+}
+
+RoiStatistics DicomLoader::computeRoiStatistics(const DicomImageData& data, const QRect& rect) {
+    RoiStatistics stats;
+    if (!data.isValid || !data.renderContext || !data.renderContext->dicomImage) {
+        return stats;
+    }
+    const DicomImage& dcmImg = *data.renderContext->dicomImage;
+    const int w = static_cast<int>(dcmImg.getWidth());
+    const int h = static_cast<int>(dcmImg.getHeight());
+    const QRect clamped = rect.normalized().intersected(QRect(0, 0, w, h));
+    if (clamped.isEmpty()) {
+        return stats;
     }
 
-    switch (interData->getRepresentation()) {
-    case EPR_Uint8:
-        outValue = static_cast<double>(static_cast<const Uint8*>(raw)[idx]);
-        return true;
-    case EPR_Sint8:
-        outValue = static_cast<double>(static_cast<const Sint8*>(raw)[idx]);
-        return true;
-    case EPR_Uint16:
-        outValue = static_cast<double>(static_cast<const Uint16*>(raw)[idx]);
-        return true;
-    case EPR_Sint16:
-        outValue = static_cast<double>(static_cast<const Sint16*>(raw)[idx]);
-        return true;
-    case EPR_Uint32:
-        outValue = static_cast<double>(static_cast<const Uint32*>(raw)[idx]);
-        return true;
-    case EPR_Sint32:
-        outValue = static_cast<double>(static_cast<const Sint32*>(raw)[idx]);
-        return true;
-    default:
-        return false;
+    const DiPixel* interData = dcmImg.getInterData();
+    if (!interData || interData->getCount() == 0 || !interData->getData()) {
+        return stats;
     }
+
+    double sum = 0.0;
+    double sumSq = 0.0;
+    double minV = std::numeric_limits<double>::max();
+    double maxV = std::numeric_limits<double>::lowest();
+    int count = 0;
+
+    for (int y = clamped.top(); y <= clamped.bottom(); ++y) {
+        const size_t rowBase = static_cast<size_t>(y) * static_cast<size_t>(w);
+        for (int x = clamped.left(); x <= clamped.right(); ++x) {
+            const size_t idx = rowBase + static_cast<size_t>(x);
+            if (idx >= interData->getCount()) {
+                continue;
+            }
+            const double val = readCalibratedPixelAt(*interData, idx);
+            sum += val;
+            sumSq += val * val;
+            minV = std::min(minV, val);
+            maxV = std::max(maxV, val);
+            ++count;
+        }
+    }
+
+    if (count == 0) {
+        return stats;
+    }
+
+    const double mean = sum / static_cast<double>(count);
+    const double variance = std::max(0.0, (sumSq / static_cast<double>(count)) - (mean * mean));
+    stats.valid = true;
+    stats.pixelCount = count;
+    stats.mean = mean;
+    stats.stdDev = std::sqrt(variance);
+    stats.minVal = minV;
+    stats.maxVal = maxV;
+    stats.areaMm2 = static_cast<double>(count) * data.pixelSpacingX * data.pixelSpacingY;
+    return stats;
 }
 
 } // namespace dicom

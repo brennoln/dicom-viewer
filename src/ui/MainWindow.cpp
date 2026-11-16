@@ -7,6 +7,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QGraphicsLineItem>
+#include <QGraphicsRectItem>
 #include <QGraphicsSimpleTextItem>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -24,11 +25,32 @@
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QWheelEvent>
+#include <QtConcurrent/QtConcurrentRun>
 
 #include <algorithm>
 #include <cmath>
 
 namespace dicom {
+
+namespace {
+
+QString oppositeAnatomyCode(const QString& code) {
+    QString opp;
+    for (const QChar ch : code) {
+        switch (ch.toUpper().toLatin1()) {
+        case 'A': opp.append(QLatin1Char('P')); break;
+        case 'P': opp.append(QLatin1Char('A')); break;
+        case 'L': opp.append(QLatin1Char('R')); break;
+        case 'R': opp.append(QLatin1Char('L')); break;
+        case 'H': opp.append(QLatin1Char('F')); break;
+        case 'F': opp.append(QLatin1Char('H')); break;
+        default:  opp.append(ch); break;
+        }
+    }
+    return opp;
+}
+
+} // namespace
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent) {
@@ -37,11 +59,39 @@ MainWindow::MainWindow(QWidget* parent)
     setMinimumSize(720, 520);
     setAcceptDrops(true);
 
+    m_loadWatcher = new QFutureWatcher<DicomImageData>(this);
+    connect(m_loadWatcher, &QFutureWatcher<DicomImageData>::finished, this, [this]() {
+        QApplication::restoreOverrideCursor();
+        const DicomImageData data = m_loadWatcher->result();
+        const bool ok = applyLoadedData(m_pendingAsyncPath, data, m_pendingShowModalError);
+        emit asyncLoadCompleted(ok);
+    });
+
+    m_cineTimer = new QTimer(this);
+    m_cineTimer->setInterval(100); // 10 FPS padrão para playback clínico
+    connect(m_cineTimer, &QTimer::timeout, this, [this]() {
+        if (!hasLoadedImage() || m_currentData.frameCount <= 1) {
+            m_cineTimer->stop();
+            return;
+        }
+        const int nextFrame = (m_currentData.currentFrame + 1) % m_currentData.frameCount;
+        setCurrentFrame(nextFrame);
+    });
+
     setupActionsAndToolbar();
     setupUi();
     setupMetadataDock();
 
     statusBar()->showMessage(QStringLiteral("Pronto. Selecione ou arraste um arquivo DICOM (.dcm) para visualizar."));
+}
+
+MainWindow::~MainWindow() {
+    if (m_cineTimer) {
+        m_cineTimer->stop();
+    }
+    if (m_loadWatcher && m_loadWatcher->isRunning()) {
+        m_loadWatcher->waitForFinished();
+    }
 }
 
 void MainWindow::setupActionsAndToolbar() {
@@ -54,7 +104,8 @@ void MainWindow::setupActionsAndToolbar() {
     m_exportImageAction->setEnabled(false);
     connect(m_exportImageAction, &QAction::triggered, this, &MainWindow::onExportImageTriggered);
 
-    m_exportAnonAction = new QAction(QStringLiteral("Exportar DICOM Anonimizado (LGPD)..."), this);
+    m_exportAnonAction = new QAction(QStringLiteral("Exportar LGPD"), this);
+    m_exportAnonAction->setToolTip(QStringLiteral("Exportar arquivo DICOM anonimizado sem dados pessoais (LGPD)"));
     m_exportAnonAction->setEnabled(false);
     connect(m_exportAnonAction, &QAction::triggered, this, &MainWindow::onExportAnonymizedDicomTriggered);
 
@@ -100,6 +151,12 @@ void MainWindow::setupActionsAndToolbar() {
     m_measureAction->setToolTip(QStringLiteral("Clique em dois pontos na imagem para medir distância em milímetros"));
     connect(m_measureAction, &QAction::toggled, this, &MainWindow::onMeasureModeToggled);
 
+    m_roiAction = new QAction(QStringLiteral("ROI (HU)"), this);
+    m_roiAction->setCheckable(true);
+    m_roiAction->setEnabled(false);
+    m_roiAction->setToolTip(QStringLiteral("Clique em dois cantos para calcular Média, DP, Min/Max e Área (mm²)"));
+    connect(m_roiAction, &QAction::toggled, this, &MainWindow::onRoiModeToggled);
+
     m_clearMeasuresAction = new QAction(QStringLiteral("Limpar Medidas"), this);
     m_clearMeasuresAction->setEnabled(false);
     connect(m_clearMeasuresAction, &QAction::triggered, this, &MainWindow::onClearMeasurementsTriggered);
@@ -123,6 +180,7 @@ void MainWindow::setupActionsAndToolbar() {
     QMenu* viewMenu = menuBar()->addMenu(QStringLiteral("&Visualizar"));
     viewMenu->addAction(m_fitAction);
     viewMenu->addAction(m_actualSizeAction);
+    viewMenu->addSeparator();
     viewMenu->addAction(m_zoomInAction);
     viewMenu->addAction(m_zoomOutAction);
     viewMenu->addSeparator();
@@ -131,6 +189,7 @@ void MainWindow::setupActionsAndToolbar() {
     viewMenu->addAction(m_flipHAction);
     viewMenu->addSeparator();
     viewMenu->addAction(m_measureAction);
+    viewMenu->addAction(m_roiAction);
     viewMenu->addAction(m_clearMeasuresAction);
     viewMenu->addSeparator();
     viewMenu->addAction(m_toggleMetadataAction);
@@ -151,6 +210,7 @@ void MainWindow::setupActionsAndToolbar() {
     toolBar->addAction(m_flipHAction);
     toolBar->addSeparator();
     toolBar->addAction(m_measureAction);
+    toolBar->addAction(m_roiAction);
     toolBar->addAction(m_clearMeasuresAction);
     toolBar->addSeparator();
     toolBar->addAction(m_toggleMetadataAction);
@@ -182,14 +242,29 @@ void MainWindow::setupUi() {
     topBarLayout->addWidget(m_infoHeaderLabel, 1);
     mainLayout->addLayout(topBarLayout);
 
-    // Barra de controle de Window Level / Window Width
+    // Barra de controle de Window Level / Window Width e Presets Clínicos
     m_windowControlBar = new QWidget(centralWidget);
     m_windowControlBar->setObjectName(QStringLiteral("windowControlBar"));
     auto* wlLayout = new QHBoxLayout(m_windowControlBar);
     wlLayout->setContentsMargins(6, 4, 6, 4);
     wlLayout->setSpacing(8);
 
-    auto* wcLabel = new QLabel(QStringLiteral("Window Level (Center):"), m_windowControlBar);
+    auto* presetLabel = new QLabel(QStringLiteral("Preset:"), m_windowControlBar);
+    m_windowPresetCombo = new QComboBox(m_windowControlBar);
+    m_windowPresetCombo->setObjectName(QStringLiteral("windowPresetCombo"));
+    m_windowPresetCombo->addItems({
+        QStringLiteral("Padrão DICOM (VOI LUT)"),
+        QStringLiteral("CT Pulmão (-600 / 1500)"),
+        QStringLiteral("CT Osso (300 / 1500)"),
+        QStringLiteral("CT Abdômen / Tecido Mole (40 / 400)"),
+        QStringLiteral("CT Cérebro (40 / 80)")
+    });
+    connect(m_windowPresetCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
+        if (m_updatingWindowControls) return;
+        applyClinicalWindowPreset(idx);
+    });
+
+    auto* wcLabel = new QLabel(QStringLiteral("WL:"), m_windowControlBar);
     m_wcSlider = new QSlider(Qt::Horizontal, m_windowControlBar);
     m_wcSlider->setObjectName(QStringLiteral("wcSlider"));
     m_wcSpinBox = new QDoubleSpinBox(m_windowControlBar);
@@ -197,7 +272,7 @@ void MainWindow::setupUi() {
     m_wcSpinBox->setDecimals(1);
     m_wcSpinBox->setRange(-32768.0, 65535.0);
 
-    auto* wwLabel = new QLabel(QStringLiteral("Window Width:"), m_windowControlBar);
+    auto* wwLabel = new QLabel(QStringLiteral("WW:"), m_windowControlBar);
     m_wwSlider = new QSlider(Qt::Horizontal, m_windowControlBar);
     m_wwSlider->setObjectName(QStringLiteral("wwSlider"));
     m_wwSpinBox = new QDoubleSpinBox(m_windowControlBar);
@@ -208,10 +283,13 @@ void MainWindow::setupUi() {
     m_resetWindowButton = new QPushButton(QStringLiteral("Resetar WL/WW"), m_windowControlBar);
     m_resetWindowButton->setObjectName(QStringLiteral("resetWindowButton"));
 
+    wlLayout->addWidget(presetLabel);
+    wlLayout->addWidget(m_windowPresetCombo);
+    wlLayout->addSpacing(8);
     wlLayout->addWidget(wcLabel);
     wlLayout->addWidget(m_wcSlider, 1);
     wlLayout->addWidget(m_wcSpinBox);
-    wlLayout->addSpacing(12);
+    wlLayout->addSpacing(8);
     wlLayout->addWidget(wwLabel);
     wlLayout->addWidget(m_wwSlider, 1);
     wlLayout->addWidget(m_wwSpinBox);
@@ -238,6 +316,51 @@ void MainWindow::setupUi() {
     });
     connect(m_resetWindowButton, &QPushButton::clicked, this, &MainWindow::onResetWindowTriggered);
 
+    // Barra de navegação Multi-Frame / Cine (exibida apenas quando frameCount > 1)
+    m_frameControlBar = new QWidget(centralWidget);
+    m_frameControlBar->setObjectName(QStringLiteral("frameControlBar"));
+    auto* frameLayout = new QHBoxLayout(m_frameControlBar);
+    frameLayout->setContentsMargins(6, 2, 6, 2);
+    frameLayout->setSpacing(8);
+
+    auto* frameTitle = new QLabel(QStringLiteral("Navegação de Frames / Cortes:"), m_frameControlBar);
+    m_prevFrameButton = new QPushButton(QStringLiteral("< Anterior"), m_frameControlBar);
+    m_frameSlider = new QSlider(Qt::Horizontal, m_frameControlBar);
+    m_frameSlider->setObjectName(QStringLiteral("frameSlider"));
+    m_frameSpinBox = new QSpinBox(m_frameControlBar);
+    m_frameSpinBox->setObjectName(QStringLiteral("frameSpinBox"));
+    m_frameTotalLabel = new QLabel(QStringLiteral("/ 1"), m_frameControlBar);
+    m_nextFrameButton = new QPushButton(QStringLiteral("Próximo >"), m_frameControlBar);
+    m_cinePlayButton = new QPushButton(QStringLiteral("Play Cine"), m_frameControlBar);
+    m_cinePlayButton->setCheckable(true);
+
+    frameLayout->addWidget(frameTitle);
+    frameLayout->addWidget(m_prevFrameButton);
+    frameLayout->addWidget(m_frameSlider, 1);
+    frameLayout->addWidget(m_frameSpinBox);
+    frameLayout->addWidget(m_frameTotalLabel);
+    frameLayout->addWidget(m_nextFrameButton);
+    frameLayout->addWidget(m_cinePlayButton);
+
+    m_frameControlBar->setVisible(false);
+    mainLayout->addWidget(m_frameControlBar);
+
+    connect(m_prevFrameButton, &QPushButton::clicked, this, [this]() {
+        setCurrentFrame(std::max(0, m_currentData.currentFrame - 1));
+    });
+    connect(m_nextFrameButton, &QPushButton::clicked, this, [this]() {
+        setCurrentFrame(std::min(m_currentData.frameCount - 1, m_currentData.currentFrame + 1));
+    });
+    connect(m_frameSlider, &QSlider::valueChanged, this, [this](int val) {
+        if (m_updatingFrameControls) return;
+        setCurrentFrame(val - 1);
+    });
+    connect(m_frameSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int val) {
+        if (m_updatingFrameControls) return;
+        setCurrentFrame(val - 1);
+    });
+    connect(m_cinePlayButton, &QPushButton::toggled, this, &MainWindow::onCinePlayToggled);
+
     // Banner de erro para arquivos inválidos
     m_errorBannerLabel = new QLabel(centralWidget);
     m_errorBannerLabel->setObjectName(QStringLiteral("errorBannerLabel"));
@@ -263,7 +386,7 @@ void MainWindow::setupUi() {
     m_graphicsView->setMouseTracking(true);
     m_graphicsView->viewport()->setMouseTracking(true);
     m_graphicsView->viewport()->installEventFilter(this);
-    m_graphicsView->setToolTip(QStringLiteral("Roda: Zoom | Esq: Mover | Dir + arraste: WL/WW | Régua: medir em mm"));
+    m_graphicsView->setToolTip(QStringLiteral("Roda: Zoom | Esq: Mover | Dir + arraste: WL/WW | Régua/ROI: medir"));
 
     m_pixmapItem = new QGraphicsPixmapItem();
     m_pixmapItem->setTransformationMode(Qt::SmoothTransformation);
@@ -319,15 +442,34 @@ void MainWindow::onOpenFileTriggered() {
         QStringLiteral("Arquivos DICOM (*.dcm *.dicom *.DCM);;Todos os Arquivos (*.*)"));
 
     if (!filePath.isEmpty()) {
-        loadDicomFile(filePath, true);
+        loadDicomFileAsync(filePath, true);
     }
 }
 
 bool MainWindow::loadDicomFile(const QString& filePath, bool showModalError) {
     QApplication::setOverrideCursor(Qt::WaitCursor);
-    const DicomImageData data = m_loader.loadFile(filePath);
+    const DicomImageData data = m_loader.loadFile(filePath, 0);
     QApplication::restoreOverrideCursor();
+    return applyLoadedData(filePath, data, showModalError);
+}
 
+void MainWindow::loadDicomFileAsync(const QString& filePath, bool showModalError) {
+    if (m_loadWatcher->isRunning()) {
+        m_loadWatcher->waitForFinished();
+    }
+    m_pendingAsyncPath = filePath;
+    m_pendingShowModalError = showModalError;
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    statusBar()->showMessage(QStringLiteral("Carregando e decodificando exame DICOM..."));
+
+    auto future = QtConcurrent::run([filePath]() {
+        DicomLoader asyncLoader;
+        return asyncLoader.loadFile(filePath, 0);
+    });
+    m_loadWatcher->setFuture(future);
+}
+
+bool MainWindow::applyLoadedData(const QString& filePath, const DicomImageData& data, bool showModalError) {
     if (!data.isValid) {
         m_lastError = data.errorMessage;
         m_errorBannerLabel->setText(QStringLiteral("Erro ao carregar arquivo: %1").arg(data.errorMessage));
@@ -343,7 +485,11 @@ bool MainWindow::loadDicomFile(const QString& filePath, bool showModalError) {
         return false;
     }
 
-    // Sucesso: limpa erros, medições e transformações visuais anteriores
+    if (m_cineTimer->isActive()) {
+        m_cineTimer->stop();
+        m_cinePlayButton->setChecked(false);
+    }
+
     m_lastError.clear();
     m_errorBannerLabel->clear();
     m_errorBannerLabel->setVisible(false);
@@ -358,6 +504,7 @@ bool MainWindow::loadDicomFile(const QString& filePath, bool showModalError) {
     m_flipHAction->setChecked(false);
 
     refreshDisplayedPixmap();
+    updateOrientationOverlay();
 
     m_exportImageAction->setEnabled(true);
     m_exportAnonAction->setEnabled(true);
@@ -369,9 +516,11 @@ bool MainWindow::loadDicomFile(const QString& filePath, bool showModalError) {
     m_rotateAction->setEnabled(true);
     m_flipHAction->setEnabled(true);
     m_measureAction->setEnabled(true);
+    m_roiAction->setEnabled(true);
     m_clearMeasuresAction->setEnabled(true);
 
     updateWindowControls(m_currentData);
+    updateFrameControls(m_currentData);
     updateMetadataTable(m_currentData.metadata);
     updateInfoPanel(filePath, m_currentData);
     onFitToWindow();
@@ -379,7 +528,11 @@ bool MainWindow::loadDicomFile(const QString& filePath, bool showModalError) {
     m_auditLogger.logEvent(QStringLiteral("OPEN_SUCCESS"),
                            filePath,
                            QStringLiteral("OK"),
-                           QStringLiteral("%1x%2 %3").arg(data.width).arg(data.height).arg(data.modality));
+                           QStringLiteral("%1x%2 frames=%3 %4")
+                               .arg(data.width)
+                               .arg(data.height)
+                               .arg(data.frameCount)
+                               .arg(data.modality));
     return true;
 }
 
@@ -456,6 +609,61 @@ void MainWindow::refreshDisplayedPixmap() {
     m_graphicsScene->setSceneRect(pixmap.rect());
 }
 
+void MainWindow::updateOrientationOverlay() {
+    for (QGraphicsItem* item : m_orientationItems) {
+        m_graphicsScene->removeItem(item);
+        delete item;
+    }
+    m_orientationItems.clear();
+
+    if (!m_currentData.isValid || m_currentData.patientOrientation.isEmpty()) {
+        return;
+    }
+
+    const QStringList parts = m_currentData.patientOrientation.split(QLatin1Char('\\'));
+    if (parts.size() < 2) {
+        return;
+    }
+
+    // PatientOrientation: parts[0] = direção para direita (fim da linha); parts[1] = direção para baixo (fim da coluna)
+    QString rightLabel = parts[0].trimmed();
+    QString leftLabel = oppositeAnatomyCode(rightLabel);
+    QString bottomLabel = parts[1].trimmed();
+    QString topLabel = oppositeAnatomyCode(bottomLabel);
+
+    if (m_userFlipHorizontal) {
+        std::swap(leftLabel, rightLabel);
+    }
+    for (int r = 0; r < m_userRotationQuarterTurns; ++r) {
+        const QString prevTop = topLabel;
+        topLabel = leftLabel;
+        leftLabel = bottomLabel;
+        bottomLabel = rightLabel;
+        rightLabel = prevTop;
+    }
+
+    const QRectF rect = m_graphicsScene->sceneRect();
+    if (rect.isEmpty()) {
+        return;
+    }
+
+    auto addMarker = [this](const QString& text, const QPointF& pos) {
+        if (text.isEmpty()) return;
+        auto* item = m_graphicsScene->addSimpleText(text);
+        item->setBrush(QColor(255, 213, 79));
+        item->setFlag(QGraphicsItem::ItemIgnoresTransformations, true);
+        item->setPos(pos);
+        item->setZValue(9.0);
+        m_orientationItems.append(item);
+    };
+
+    const qreal margin = std::max<qreal>(12.0, std::min(rect.width(), rect.height()) * 0.02);
+    addMarker(topLabel, QPointF(rect.center().x(), rect.top() + margin));
+    addMarker(bottomLabel, QPointF(rect.center().x(), rect.bottom() - margin));
+    addMarker(leftLabel, QPointF(rect.left() + margin, rect.center().y()));
+    addMarker(rightLabel, QPointF(rect.right() - margin, rect.center().y()));
+}
+
 void MainWindow::onInvertToggled(bool checked) {
     m_isInverted = checked;
     refreshDisplayedPixmap();
@@ -467,6 +675,7 @@ void MainWindow::onRotate90Triggered() {
     }
     m_userRotationQuarterTurns = (m_userRotationQuarterTurns + 1) % 4;
     refreshDisplayedPixmap();
+    updateOrientationOverlay();
     if (m_autoFitEnabled) {
         onFitToWindow();
     }
@@ -478,20 +687,42 @@ void MainWindow::onFlipHorizontalTriggered() {
     }
     m_userFlipHorizontal = !m_userFlipHorizontal;
     refreshDisplayedPixmap();
+    updateOrientationOverlay();
 }
 
 void MainWindow::onMeasureModeToggled(bool checked) {
     m_isMeasuringMode = checked;
+    if (checked && m_roiAction->isChecked()) {
+        m_roiAction->setChecked(false);
+    }
     m_hasMeasureStart = false;
     if (m_previewLineItem) {
         m_graphicsScene->removeItem(m_previewLineItem);
         delete m_previewLineItem;
         m_previewLineItem = nullptr;
     }
-    m_graphicsView->setDragMode(checked ? QGraphicsView::NoDrag : QGraphicsView::ScrollHandDrag);
-    m_graphicsView->viewport()->setCursor(checked ? Qt::CrossCursor : Qt::ArrowCursor);
+    m_graphicsView->setDragMode((m_isMeasuringMode || m_isRoiMode) ? QGraphicsView::NoDrag : QGraphicsView::ScrollHandDrag);
+    m_graphicsView->viewport()->setCursor((m_isMeasuringMode || m_isRoiMode) ? Qt::CrossCursor : Qt::ArrowCursor);
     statusBar()->showMessage(checked
         ? QStringLiteral("Modo Régua ativo: clique no ponto inicial e depois no ponto final para medir em mm.")
+        : QStringLiteral("Modo Navegação ativo."));
+}
+
+void MainWindow::onRoiModeToggled(bool checked) {
+    m_isRoiMode = checked;
+    if (checked && m_measureAction->isChecked()) {
+        m_measureAction->setChecked(false);
+    }
+    m_hasMeasureStart = false;
+    if (m_previewRectItem) {
+        m_graphicsScene->removeItem(m_previewRectItem);
+        delete m_previewRectItem;
+        m_previewRectItem = nullptr;
+    }
+    m_graphicsView->setDragMode((m_isMeasuringMode || m_isRoiMode) ? QGraphicsView::NoDrag : QGraphicsView::ScrollHandDrag);
+    m_graphicsView->viewport()->setCursor((m_isMeasuringMode || m_isRoiMode) ? Qt::CrossCursor : Qt::ArrowCursor);
+    statusBar()->showMessage(checked
+        ? QStringLiteral("Modo ROI ativo: clique em dois cantos opostos para calcular estatísticas (Média, DP, Área).")
         : QStringLiteral("Modo Navegação ativo."));
 }
 
@@ -516,6 +747,40 @@ double MainWindow::measureDistanceMm(const QPointF& p1, const QPointF& p2) {
     return distMm;
 }
 
+RoiStatistics MainWindow::measureRoiStats(const QRectF& sceneRect) {
+    const QRect pixelRect(
+        QPoint(static_cast<int>(std::floor(sceneRect.left())),
+               static_cast<int>(std::floor(sceneRect.top()))),
+        QPoint(static_cast<int>(std::ceil(sceneRect.right())),
+               static_cast<int>(std::ceil(sceneRect.bottom()))));
+    const RoiStatistics stats = DicomLoader::computeRoiStatistics(m_currentData, pixelRect);
+    if (!stats.valid) {
+        return stats;
+    }
+
+    const QRectF normRect = sceneRect.normalized();
+    QPen pen(QColor(255, 213, 79), 2.0);
+    pen.setCosmetic(true);
+    auto* rectItem = m_graphicsScene->addRect(normRect, pen);
+    rectItem->setZValue(10.0);
+
+    const QString text = QStringLiteral("Média: %1 | DP: %2\nMin/Max: %3 / %4\nÁrea: %5 mm²")
+                             .arg(stats.mean, 0, 'f', 1)
+                             .arg(stats.stdDev, 0, 'f', 1)
+                             .arg(stats.minVal, 0, 'f', 0)
+                             .arg(stats.maxVal, 0, 'f', 0)
+                             .arg(stats.areaMm2, 0, 'f', 1);
+    auto* labelItem = m_graphicsScene->addSimpleText(text);
+    labelItem->setBrush(QColor(255, 213, 79));
+    labelItem->setFlag(QGraphicsItem::ItemIgnoresTransformations, true);
+    labelItem->setPos(normRect.topLeft());
+    labelItem->setZValue(11.0);
+
+    m_measurementItems.append(rectItem);
+    m_measurementItems.append(labelItem);
+    return stats;
+}
+
 void MainWindow::onClearMeasurementsTriggered() {
     clearMeasurements();
 }
@@ -526,12 +791,91 @@ void MainWindow::clearMeasurements() {
         delete m_previewLineItem;
         m_previewLineItem = nullptr;
     }
+    if (m_previewRectItem) {
+        m_graphicsScene->removeItem(m_previewRectItem);
+        delete m_previewRectItem;
+        m_previewRectItem = nullptr;
+    }
     for (QGraphicsItem* item : m_measurementItems) {
         m_graphicsScene->removeItem(item);
         delete item;
     }
     m_measurementItems.clear();
     m_hasMeasureStart = false;
+}
+
+void MainWindow::updateFrameControls(const DicomImageData& data) {
+    m_updatingFrameControls = true;
+    const bool multiFrame = data.isValid && data.frameCount > 1;
+    m_frameControlBar->setVisible(multiFrame);
+    if (multiFrame) {
+        m_frameSlider->setRange(1, data.frameCount);
+        m_frameSpinBox->setRange(1, data.frameCount);
+        m_frameSlider->setValue(data.currentFrame + 1);
+        m_frameSpinBox->setValue(data.currentFrame + 1);
+        m_frameTotalLabel->setText(QStringLiteral("/ %1").arg(data.frameCount));
+    }
+    m_updatingFrameControls = false;
+}
+
+bool MainWindow::setCurrentFrame(int frameIndex) {
+    if (!m_currentData.isValid || frameIndex < 0 || frameIndex >= m_currentData.frameCount) {
+        return false;
+    }
+    if (frameIndex == m_currentData.currentFrame) {
+        return true;
+    }
+    const DicomImageData updated = m_loader.loadFrame(m_currentData, frameIndex);
+    if (!updated.isValid) {
+        return false;
+    }
+
+    m_currentData = updated;
+    refreshDisplayedPixmap();
+
+    m_updatingFrameControls = true;
+    m_frameSlider->setValue(frameIndex + 1);
+    m_frameSpinBox->setValue(frameIndex + 1);
+    m_updatingFrameControls = false;
+
+    statusBar()->showMessage(
+        QStringLiteral("Frame %1 de %2").arg(frameIndex + 1).arg(m_currentData.frameCount));
+    return true;
+}
+
+void MainWindow::onCinePlayToggled(bool checked) {
+    if (checked && m_currentData.frameCount > 1) {
+        m_cinePlayButton->setText(QStringLiteral("Pausar Cine"));
+        m_cineTimer->start();
+    } else {
+        m_cinePlayButton->setText(QStringLiteral("Play Cine"));
+        m_cineTimer->stop();
+    }
+}
+
+void MainWindow::applyClinicalWindowPreset(int presetIndex) {
+    if (!m_currentData.isValid || !m_currentData.isMonochrome) {
+        return;
+    }
+    switch (presetIndex) {
+    case 0:
+        resetWindowLevelWidth();
+        break;
+    case 1: // CT Pulmão
+        setWindowLevelWidth(-600.0, 1500.0);
+        break;
+    case 2: // CT Osso
+        setWindowLevelWidth(300.0, 1500.0);
+        break;
+    case 3: // CT Abdômen / Partes Moles
+        setWindowLevelWidth(40.0, 400.0);
+        break;
+    case 4: // CT Cérebro
+        setWindowLevelWidth(40.0, 80.0);
+        break;
+    default:
+        break;
+    }
 }
 
 void MainWindow::updateWindowControls(const DicomImageData& data) {
@@ -541,10 +885,11 @@ void MainWindow::updateWindowControls(const DicomImageData& data) {
     m_windowControlBar->setEnabled(enableWl);
 
     if (enableWl) {
-        const int minRange = static_cast<int>(std::floor(std::min(data.minPixelValue, data.windowCenter - data.windowWidth)));
-        const int maxRange = static_cast<int>(std::ceil(std::max(data.maxPixelValue, data.windowCenter + data.windowWidth)));
+        const int minRange = static_cast<int>(std::floor(std::min({-1000.0, data.minPixelValue, data.windowCenter - data.windowWidth})));
+        const int maxRange = static_cast<int>(std::ceil(std::max({3000.0, data.maxPixelValue, data.windowCenter + data.windowWidth})));
         const int maxWidth = std::max(1, static_cast<int>(std::ceil((maxRange - minRange) * 2.0)));
 
+        m_windowPresetCombo->setCurrentIndex(0);
         m_wcSlider->setRange(minRange, maxRange);
         m_wcSpinBox->setRange(static_cast<double>(minRange), static_cast<double>(maxRange));
         m_wcSlider->setValue(static_cast<int>(std::lround(data.windowCenter)));
@@ -645,6 +990,9 @@ void MainWindow::updateInfoPanel(const QString& filePath, const DicomImageData& 
     details << QStringLiteral("<b>Dimensões:</b> %1 x %2 px").arg(data.width).arg(data.height);
     details << QStringLiteral("<b>Escala:</b> %1 (%2 bits)").arg(data.photometricInterpretation).arg(data.bitsStored);
 
+    if (data.frameCount > 1) {
+        details << QStringLiteral("<b>Frames:</b> %1").arg(data.frameCount);
+    }
     if (!data.modality.isEmpty()) {
         details << QStringLiteral("<b>Modalidade:</b> %1").arg(data.modality);
     }
@@ -713,6 +1061,10 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
         if (event->type() == QEvent::Wheel) {
             auto* wheelEvent = static_cast<QWheelEvent*>(event);
             if (wheelEvent->angleDelta().y() != 0) {
+                if (m_currentData.frameCount > 1 && (wheelEvent->modifiers() & Qt::ControlModifier) == 0 &&
+                    (m_isMeasuringMode || m_isRoiMode)) {
+                    // Em ferramentas ativas, wheel ainda faz zoom
+                }
                 m_autoFitEnabled = false;
                 const double factor = (wheelEvent->angleDelta().y() > 0) ? 1.15 : (1.0 / 1.15);
                 applyZoom(factor);
@@ -740,6 +1092,34 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                 }
                 return true;
             }
+            if (mouseEvent->button() == Qt::LeftButton && m_isRoiMode) {
+                const QPointF scenePos = m_graphicsView->mapToScene(mouseEvent->pos());
+                if (!m_hasMeasureStart) {
+                    m_measureStartScene = scenePos;
+                    m_hasMeasureStart = true;
+                    QPen previewPen(QColor(255, 213, 79), 1.5, Qt::DashLine);
+                    previewPen.setCosmetic(true);
+                    m_previewRectItem = m_graphicsScene->addRect(QRectF(scenePos, scenePos), previewPen);
+                } else {
+                    if (m_previewRectItem) {
+                        m_graphicsScene->removeItem(m_previewRectItem);
+                        delete m_previewRectItem;
+                        m_previewRectItem = nullptr;
+                    }
+                    const RoiStatistics stats = measureRoiStats(QRectF(m_measureStartScene, scenePos));
+                    m_hasMeasureStart = false;
+                    if (stats.valid) {
+                        statusBar()->showMessage(
+                            QStringLiteral("ROI: Média=%1 | DP=%2 | Min=%3 | Max=%4 | Área=%5 mm²")
+                                .arg(stats.mean, 0, 'f', 1)
+                                .arg(stats.stdDev, 0, 'f', 1)
+                                .arg(stats.minVal, 0, 'f', 0)
+                                .arg(stats.maxVal, 0, 'f', 0)
+                                .arg(stats.areaMm2, 0, 'f', 1));
+                    }
+                }
+                return true;
+            }
             if (mouseEvent->button() == Qt::RightButton && m_currentData.isMonochrome) {
                 m_isAdjustingWindow = true;
                 m_lastMousePos = mouseEvent->pos();
@@ -757,6 +1137,11 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                 statusBar()->showMessage(QStringLiteral("Medindo: %1 mm").arg(distMm, 0, 'f', 1));
                 return true;
             }
+            if (m_isRoiMode && m_hasMeasureStart && m_previewRectItem) {
+                const QPointF scenePos = m_graphicsView->mapToScene(mouseEvent->pos());
+                m_previewRectItem->setRect(QRectF(m_measureStartScene, scenePos).normalized());
+                return true;
+            }
             if (m_isAdjustingWindow) {
                 const QPoint delta = mouseEvent->pos() - m_lastMousePos;
                 m_lastMousePos = mouseEvent->pos();
@@ -767,7 +1152,6 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                 setWindowLevelWidth(newCenter, newWidth);
                 return true;
             }
-            // Leitura clínica de intensidade / HU sob o cursor
             const QPointF scenePos = m_graphicsView->mapToScene(mouseEvent->pos());
             const int px = static_cast<int>(std::floor(scenePos.x()));
             const int py = static_cast<int>(std::floor(scenePos.y()));
@@ -786,7 +1170,7 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
             auto* mouseEvent = static_cast<QMouseEvent*>(event);
             if (mouseEvent->button() == Qt::RightButton) {
                 m_isAdjustingWindow = false;
-                m_graphicsView->viewport()->setCursor(m_isMeasuringMode ? Qt::CrossCursor : Qt::ArrowCursor);
+                m_graphicsView->viewport()->setCursor((m_isMeasuringMode || m_isRoiMode) ? Qt::CrossCursor : Qt::ArrowCursor);
                 return true;
             }
         }
@@ -810,7 +1194,7 @@ void MainWindow::dropEvent(QDropEvent* event) {
     if (!urls.isEmpty() && urls.first().isLocalFile()) {
         const QString filePath = urls.first().toLocalFile();
         event->acceptProposedAction();
-        loadDicomFile(filePath, true);
+        loadDicomFileAsync(filePath, true);
         return;
     }
     QMainWindow::dropEvent(event);

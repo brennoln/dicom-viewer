@@ -11,9 +11,11 @@ Com base na análise comparativa de plataformas radiológicas consolidadas (**Ra
 
 | Funcionalidade Clínica | Implementação no Software | Benefício para a Clínica |
 | :--- | :--- | :--- |
-| **Window Level / Window Width (WL/WW)** | Sliders, SpinBoxes e arraste com botão direito do mouse em tempo real + botão de Reset (`VOI LUT`) | Ajuste rápido de janelas de contraste (partes moles, osso, pulmão, mamografia) sem recarregar o arquivo. |
-| **Régua de Medição Física (mm)** | Ferramenta interativa de clique-a-clique calculada com `PixelSpacing` / `ImagerPixelSpacing` | Medição precisa de lesões, nódulos e estruturas anatômicas diretamente sobre o exame. |
-| **Leitura de Intensidade / Hounsfield Units (HU)** | Amostragem calibrada via `DicomImage::getInterData()` exibida na barra de status sob o cursor | Inspeção quantitativa de densidade (ex.: ar `-1000 HU`, osso `+1000 HU` em CT). |
+| **Window Level / Window Width (WL/WW) + Presets Clínicos** | Sliders, SpinBoxes, arraste com botão direito e presets de CT (Pulmão, Osso, Abdômen, Cérebro) + Reset (`VOI LUT`) | Troca instantânea de janelas de contraste padrão em radiologia sem recarregar o arquivo. |
+| **Navegação Multi-Frame / Modo Cine** | Barra dedicada com slider de corte/frame, botões Anterior/Próximo e playback Cine (10 fps) via `loadFrame` | Leitura fluida de exames seriados de Ultrassom, Tomografia e Ressonância multi-frame. |
+| **Régua de Medição Física (mm) & ROI Quantitativa (HU)** | Medição clique-a-clique em `mm` e ROI retangular com cálculo de Média, Desvio Padrão, Mín/Máx e Área (`mm²`) | Análise quantitativa de lesões, cistos e estruturas anatômicas diretamente sobre o exame. |
+| **Marcadores Anatômicos & Leitura sob o Cursor** | Overlays de orientação (`PatientOrientation` A/P/L/R/H/F) acompanhando rotação/espelhamento + valor calibrado na barra de status | Prevenção de desorientação espacial e inspeção instantânea de densidade tecidual. |
+| **Carregamento Assíncrono (`QtConcurrent`)** | Decodificação fora da thread da interface gráfica via `QFutureWatcher<DicomImageData>` | Interface sempre responsiva mesmo ao abrir exames pesados de mamografia ou tomografia. |
 | **Manipulação Visual Diagnóstica** | Inverter Contraste (Negativo), Rotacionar 90°, Espelhar Horizontal, Zoom, Pan e Drag & Drop | Comparação bilateral (mamografia/tórax) e agilidade na leitura de exames. |
 | **Painel Lateral de Metadados DICOM** | Tabela `QDockWidget` filtrável por tag, atributo ou valor em tempo real | Consulta rápida de paciente, modalidade, incidência (`MLO`), lateralidade (`L`/`R`) e parâmetros técnicos. |
 | **Exportação Clínica & LGPD** | Exportação em PNG/JPEG para laudo/prontuário e exportação DICOM anonimizada (`DicomAnonymizer`) | Compartilhamento seguro de casos clínicos e pesquisas em conformidade com a LGPD. |

@@ -17,8 +17,8 @@ set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
 # Busca de pacotes obrigatórios: Qt6 (ou Qt5 fallback) e DCMTK
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Core Gui Widgets Test)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Gui Widgets Test)
+find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Core Gui Widgets Concurrent Test)
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Gui Widgets Concurrent Test)
 find_package(DCMTK REQUIRED)
 
 # Biblioteca Core (Leitura, Processamento, Anonimização LGPD e Auditoria DICOM)
@@ -62,7 +62,13 @@ target_include_directories(dicom_ui PUBLIC
 target_link_libraries(dicom_ui PUBLIC
     dicom_core
     Qt${QT_VERSION_MAJOR}::Widgets
+    Qt${QT_VERSION_MAJOR}::Concurrent
 )
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(dicom_core PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(dicom_ui PRIVATE -Wall -Wextra -Wpedantic)
+endif()
 
 # Executável Principal da Aplicação
 add_executable(dicom_viewer
@@ -149,3 +155,15 @@ target_link_libraries(tst_security PRIVATE
 )
 
 add_test(NAME DicomSecurityAndComplianceTest COMMAND tst_security)
+
+add_executable(tst_cpp_recruiter
+    tests/tst_cpp_recruiter.cpp
+)
+
+target_link_libraries(tst_cpp_recruiter PRIVATE
+    dicom_ui
+    Qt${QT_VERSION_MAJOR}::Test
+    Qt${QT_VERSION_MAJOR}::Concurrent
+)
+
+add_test(NAME CppRecruiterEvaluationTest COMMAND tst_cpp_recruiter)

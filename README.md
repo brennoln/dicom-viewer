@@ -26,9 +26,11 @@ Aplicação desenvolvida para o Teste Técnico de Desenvolvedor C++ (Visualizaç
 
 ## 🏥 Diferenciais Clínicos e Segurança (LGPD)
 
-- **Window Level / Window Width (WL/WW) em Tempo Real**: Sliders, SpinBoxes e arraste com botão direito do mouse, além de botão de Reset para restaurar a `VOI LUT` original do DICOM.
+- **Window Level / Window Width (WL/WW) + Presets Clínicos**: Sliders, SpinBoxes, arraste com botão direito do mouse, presets de CT (Pulmão, Osso, Abdômen, Cérebro) e botão de Reset para restaurar a `VOI LUT` original.
+- **Navegação Multi-Frame e Modo Cine**: Controle de quadros/cortes e reprodução Cine em exames seriados.
+- **Carregamento Assíncrono (`QtConcurrent`)**: Decodificação em thread separada para não congelar a interface clínica.
 - **Painel Lateral de Metadados DICOM**: Tabela filtrável em tempo real por tag, atributo ou valor.
-- **Ferramentas Clínicas**: Régua de medição física em milímetros (`mm`), leitura de intensidade calibrada / Hounsfield Units (`HU`) sob o cursor, inversão de contraste (negativo), rotação 90° e espelhamento horizontal.
+- **Ferramentas Clínicas**: Régua de medição física (`mm`), ROI quantitativa (Média, Desvio Padrão, Mín/Máx e Área em `mm²`), marcadores de orientação anatômica, leitura calibrada sob o cursor, inversão de contraste, rotação 90° e espelhamento horizontal.
 - **Suporte a Imagens RGB**: Renderização de imagens `RGB` (*interleaved* e *planar*) além de `MONOCHROME1`/`MONOCHROME2`.
 - **Segurança & Conformidade LGPD**:
   - Proteção anti-DoS contra *Decompression Bomb* (limites de dimensões e memória antes da alocação).
@@ -110,7 +112,7 @@ Para executar todos os testes de programação com relatório detalhado:
 ctest --test-dir build --output-on-failure -V
 ```
 
-Todas as 5 suítes de testes automatizados (`EnvironmentAndToolchainTest`, `DicomLoaderCoreTest`, `DicomViewerGuiTest`, `DicomEdgeCasesTest` e `DicomSecurityAndComplianceTest`) são executadas e verificam o funcionamento, casos de borda e segurança sem intervenção manual.
+Todas as 6 suítes de testes automatizados (`EnvironmentAndToolchainTest`, `DicomLoaderCoreTest`, `DicomViewerGuiTest`, `DicomEdgeCasesTest`, `DicomSecurityAndComplianceTest` e `CppRecruiterEvaluationTest`) são executadas e verificam o funcionamento, concorrência, casos de borda e segurança sem intervenção manual.
 
 ---
 

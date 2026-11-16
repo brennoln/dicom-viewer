@@ -17,11 +17,24 @@ struct DicomMetadataEntry {
     QString value;
 };
 
+/**
+ * @brief Estatísticas quantitativas de uma Região de Interesse (ROI) clínica.
+ */
+struct RoiStatistics {
+    bool valid = false;
+    int pixelCount = 0;
+    double mean = 0.0;
+    double stdDev = 0.0;
+    double minVal = 0.0;
+    double maxVal = 0.0;
+    double areaMm2 = 0.0;
+};
+
 struct DicomRenderContext;
 
 /**
  * @brief Estrutura contendo a imagem DICOM processada, propriedades espaciais,
- * parâmetros de janelamento (WL/WW) e metadados extraídos.
+ * suporte multi-frame, parâmetros de janelamento (WL/WW) e metadados extraídos.
  */
 struct DicomImageData {
     bool isValid = false;
@@ -34,6 +47,8 @@ struct DicomImageData {
     int bitsStored = 0;
     bool isSigned = false;
     bool isMonochrome = true;
+    int frameCount = 1;
+    int currentFrame = 0;
     QString photometricInterpretation;
     QString transferSyntaxUid;
     QString modality;
@@ -63,7 +78,7 @@ struct DicomImageData {
     // Lista de metadados DICOM extraídos (diferencial)
     QVector<DicomMetadataEntry> metadata;
 
-    // Contexto interno mantido em memória para re-renderização rápida de WL/WW
+    // Contexto interno mantido em memória para re-renderização rápida de WL/WW e troca de frames
     std::shared_ptr<DicomRenderContext> renderContext;
 };
 
