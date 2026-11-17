@@ -57,6 +57,10 @@ endif()
 
 # Biblioteca de Interface Gráfica (separada do main.cpp para permitir testes de GUI)
 add_library(dicom_ui STATIC
+    src/ui/DicomViewport.h
+    src/ui/DicomViewport.cpp
+    src/ui/MetadataDockWidget.h
+    src/ui/MetadataDockWidget.cpp
     src/ui/MainWindow.h
     src/ui/MainWindow.cpp
 )

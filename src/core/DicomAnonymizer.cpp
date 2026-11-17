@@ -92,9 +92,17 @@ bool DicomAnonymizer::anonymizeFile(const QString& inputPath,
         meta->putAndInsertString(DCM_MediaStorageSOPInstanceUID, newSopUid);
     }
 
+    // Remove tags privadas (grupos ímpares) onde fabricantes podem armazenar PHI proprietária
+    for (unsigned long i = dataset->card(); i > 0; --i) {
+        DcmElement* elem = dataset->getElement(i - 1);
+        if (elem && elem->getTag().isPrivate()) {
+            delete dataset->remove(i - 1);
+        }
+    }
+
     // Marca o arquivo como anonimizado segundo o padrão DICOM
     dataset->putAndInsertString(DCM_PatientIdentityRemoved, "YES");
-    dataset->putAndInsertString(DCM_DeidentificationMethod, "LGPD_BASIC_PROFILE");
+    dataset->putAndInsertString(DCM_DeidentificationMethod, "LGPD_STRICT_PROFILE");
 
     const QFileInfo outInfo(outputPath);
     QDir().mkpath(outInfo.absolutePath());

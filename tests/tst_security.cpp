@@ -166,6 +166,9 @@ private slots:
         ds->putAndInsertString(DCM_OperatorsName, "TECNICO ROBERTO");
         ds->putAndInsertString(DCM_AccessionNumber, "ACC-2026-001");
         ds->putAndInsertString(DCM_Modality, "CR");
+        // Tag privada (grupo ímpar 0x0045) simulando PHI proprietária de fabricante
+        ds->putAndInsertString(DcmTag(0x0045, 0x0010, EVR_LO), "VENDOR_PRIVATE");
+        ds->putAndInsertString(DcmTag(0x0045, 0x1010, EVR_LO), "MARIA DA SILVA PRIVADO");
 
         ds->putAndInsertUint16(DCM_SamplesPerPixel, 1);
         ds->putAndInsertString(DCM_PhotometricInterpretation, "MONOCHROME2");
@@ -205,6 +208,8 @@ private slots:
         QVERIFY(!checkDs->tagExistsWithValue(DCM_InstitutionName));
         QVERIFY(!checkDs->tagExistsWithValue(DCM_OperatorsName));
         QVERIFY(!checkDs->tagExistsWithValue(DCM_AccessionNumber));
+        QVERIFY(!checkDs->tagExistsWithValue(DcmTagKey(0x0045, 0x0010)));
+        QVERIFY(!checkDs->tagExistsWithValue(DcmTagKey(0x0045, 0x1010)));
 
         // UIDs devem ter sido regenerados
         QVERIFY(checkDs->findAndGetOFString(DCM_StudyInstanceUID, val).good());

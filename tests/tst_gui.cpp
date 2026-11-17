@@ -1,6 +1,9 @@
 #include <QtTest>
 #include <QApplication>
+#include <QGraphicsView>
+#include <QLineEdit>
 #include <QMessageBox>
+#include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTimer>
 

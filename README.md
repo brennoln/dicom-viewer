@@ -73,7 +73,9 @@ dicom-viewer/
 │   │   ├── DicomImageData.h        # Modelo de dados da imagem, ROI e metadados
 │   │   └── DicomLoader.h/.cpp      # Leitura, codecs, multi-frame, ROI e renderização
 │   └── ui/
-│       └── MainWindow.h/.cpp       # Interface clínica Qt Widgets e interações
+│       ├── DicomViewport.h/.cpp    # Viewport radiológico (zoom, pan, régua, ROI, WL/WW)
+│       ├── MetadataDockWidget.h/.cpp # Painel lateral filtrável de metadados DICOM
+│       └── MainWindow.h/.cpp       # Orquestração principal da janela clínica Qt
 └── tests/
     ├── tst_environment.cpp         # Suíte 1: Padrão C++17, dicionário DCMTK e janela
     ├── tst_dicom_loader.cpp        # Suíte 2: Validação de erros, formatos e exame oficial
