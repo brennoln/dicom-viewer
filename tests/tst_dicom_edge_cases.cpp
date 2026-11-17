@@ -10,6 +10,7 @@
 #include <dcmtk/dcmdata/dcfilefo.h>
 #include <dcmtk/dcmdata/dcuid.h>
 #include <dcmtk/dcmdata/dcxfer.h>
+#include <algorithm>
 #include <vector>
 
 class DicomEdgeCasesTest : public QObject {

@@ -12,6 +12,7 @@
 #include <dcmtk/dcmdata/dcdeftag.h>
 #include <dcmtk/dcmdata/dcfilefo.h>
 #include <dcmtk/dcmdata/dcuid.h>
+#include <algorithm>
 #include <cmath>
 #include <memory>
 #include <vector>

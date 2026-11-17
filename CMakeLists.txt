@@ -42,17 +42,26 @@ target_include_directories(dicom_core PUBLIC
 target_link_libraries(dicom_core PUBLIC
     Qt${QT_VERSION_MAJOR}::Core
     Qt${QT_VERSION_MAJOR}::Gui
-    DCMTK::dcmdata
-    DCMTK::dcmimgle
-    DCMTK::dcmimage
-    DCMTK::dcmjpeg
-    DCMTK::ofstd
-    DCMTK::oflog
 )
 
-if(TARGET DCMTK::dcmjpls)
-    target_link_libraries(dicom_core PUBLIC DCMTK::dcmjpls)
-    target_compile_definitions(dicom_core PRIVATE HAS_DCMTK_JPLS=1)
+if(TARGET DCMTK::dcmdata)
+    target_link_libraries(dicom_core PUBLIC
+        DCMTK::dcmdata
+        DCMTK::dcmimgle
+        DCMTK::dcmimage
+        DCMTK::dcmjpeg
+        DCMTK::ofstd
+        DCMTK::oflog
+    )
+    if(TARGET DCMTK::dcmjpls)
+        target_link_libraries(dicom_core PUBLIC DCMTK::dcmjpls)
+        target_compile_definitions(dicom_core PRIVATE HAS_DCMTK_JPLS=1)
+    endif()
+else()
+    target_link_libraries(dicom_core PUBLIC ${DCMTK_LIBRARIES})
+    if(TARGET dcmjpls)
+        target_compile_definitions(dicom_core PRIVATE HAS_DCMTK_JPLS=1)
+    endif()
 endif()
 
 # Biblioteca de Interface Gráfica (separada do main.cpp para permitir testes de GUI)
