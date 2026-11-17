@@ -23,6 +23,11 @@ jobs:
             ninja-build \
             qt6-base-dev \
             libdcmtk-dev \
+            libtiff-dev \
+            libpng-dev \
+            libjpeg-dev \
+            zlib1g-dev \
+            libxml2-dev \
             cppcheck
 
       - name: Configure with CMake

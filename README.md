@@ -100,7 +100,7 @@ Certifique-se de que `C:\msys64\ucrt64\bin` esteja no seu `PATH`.
 #### Linux (Ubuntu / Debian)
 ```bash
 sudo apt-get update
-sudo apt-get install -y build-essential cmake ninja-build qt6-base-dev libdcmtk-dev
+sudo apt-get install -y build-essential cmake ninja-build qt6-base-dev libdcmtk-dev libtiff-dev libpng-dev libjpeg-dev zlib1g-dev libxml2-dev
 ```
 
 #### macOS (Homebrew)
