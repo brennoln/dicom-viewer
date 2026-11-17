@@ -9,6 +9,7 @@
 #include <limits>
 #include <mutex>
 
+#include <dcmtk/config/osconfig.h>
 #include <dcmtk/dcmdata/dcdatset.h>
 #include <dcmtk/dcmdata/dcdeftag.h>
 #include <dcmtk/dcmdata/dcdict.h>
@@ -217,8 +218,12 @@ void applyDefaultVoi(DicomImage& dicomImage, DicomRenderContext& ctx) {
     if (voiLutCount > 0) {
         unsigned long selectedLut = 0;
         for (unsigned long i = 0; i < voiLutCount; ++i) {
+#if PACKAGE_VERSION_NUMBER >= 370
             OFString explanation;
             const char* desc = dicomImage.getVoiLutExplanation(i, explanation);
+#else
+            const char* desc = dicomImage.getVoiLutExplanation(i);
+#endif
             if (desc && QString::fromLatin1(desc).contains(QStringLiteral("NORMAL"), Qt::CaseInsensitive)) {
                 selectedLut = i;
                 break;
@@ -234,8 +239,12 @@ void applyDefaultVoi(DicomImage& dicomImage, DicomRenderContext& ctx) {
     if (!voiApplied && windowCount > 0) {
         unsigned long selectedWin = 0;
         for (unsigned long i = 0; i < windowCount; ++i) {
+#if PACKAGE_VERSION_NUMBER >= 370
             OFString explanation;
             const char* desc = dicomImage.getVoiWindowExplanation(i, explanation);
+#else
+            const char* desc = dicomImage.getVoiWindowExplanation(i);
+#endif
             if (desc && QString::fromLatin1(desc).contains(QStringLiteral("NORMAL"), Qt::CaseInsensitive)) {
                 selectedWin = i;
                 break;

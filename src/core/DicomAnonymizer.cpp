@@ -57,7 +57,7 @@ bool DicomAnonymizer::anonymizeFile(const QString& inputPath,
     scrubOrRemoveTag(dataset, DCM_PatientAddress);
     scrubOrRemoveTag(dataset, DCM_PatientTelephoneNumbers);
     scrubOrRemoveTag(dataset, DcmTagKey(0x0010, 0x1000)); // OtherPatientIDs (compatível 3.6.x e 3.7.x)
-    scrubOrRemoveTag(dataset, DCM_OtherPatientIDsSequence);
+    scrubOrRemoveTag(dataset, DcmTagKey(0x0010, 0x1002)); // OtherPatientIDsSequence
     scrubOrRemoveTag(dataset, DCM_OtherPatientNames);
     scrubOrRemoveTag(dataset, DCM_PatientComments);
 
