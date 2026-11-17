@@ -1,44 +1,20 @@
 #include "core/DicomAnonymizer.h"
+#include "core/DicomFileUtils.h"
 #include "core/DicomLoader.h"
 
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 
-#ifdef _WIN32
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#endif
-
 #include <dcmtk/dcmdata/dcdatset.h>
 #include <dcmtk/dcmdata/dcdeftag.h>
 #include <dcmtk/dcmdata/dcfilefo.h>
-#include <dcmtk/dcmdata/dcistrmb.h>
 #include <dcmtk/dcmdata/dcmetinf.h>
 #include <dcmtk/dcmdata/dcuid.h>
 
 namespace dicom {
 
 namespace {
-
-QByteArray toSafeLocalPath(const QString& filePath) {
-    const QString nativePath = QDir::toNativeSeparators(filePath);
-#ifdef _WIN32
-    const std::wstring widePath = nativePath.toStdWString();
-    DWORD shortLen = ::GetShortPathNameW(widePath.c_str(), nullptr, 0);
-    if (shortLen > 0) {
-        std::wstring shortBuf(shortLen, L'\0');
-        DWORD copied = ::GetShortPathNameW(widePath.c_str(), shortBuf.data(), shortLen);
-        if (copied > 0 && copied < shortLen) {
-            shortBuf.resize(copied);
-            return QString::fromStdWString(shortBuf).toLocal8Bit();
-        }
-    }
-#endif
-    return nativePath.toLocal8Bit();
-}
 
 void scrubOrRemoveTag(DcmItem* item, const DcmTagKey& tag, const char* replacement = nullptr) {
     if (!item) {
@@ -58,33 +34,8 @@ bool DicomAnonymizer::anonymizeFile(const QString& inputPath,
                                     QString& outError) {
     DicomLoader::ensureCodecsRegistered();
 
-    const QFileInfo inInfo(inputPath);
-    if (!inInfo.exists() || !inInfo.isFile()) {
-        outError = QStringLiteral("Arquivo de origem nao encontrado para anonimizacao.");
-        return false;
-    }
-
     DcmFileFormat fileFormat;
-    OFCondition status = fileFormat.loadFile(OFFilename(toSafeLocalPath(inInfo.absoluteFilePath()).constData()));
-    if (status.bad()) {
-        QFile file(inInfo.absoluteFilePath());
-        if (file.open(QIODevice::ReadOnly)) {
-            const QByteArray raw = file.readAll();
-            if (!raw.isEmpty()) {
-                DcmInputBufferStream stream;
-                stream.setBuffer(raw.constData(), static_cast<offile_off_t>(raw.size()));
-                stream.setEos();
-                fileFormat.clear();
-                fileFormat.transferInit();
-                status = fileFormat.read(stream);
-                fileFormat.transferEnd();
-            }
-        }
-    }
-
-    if (status.bad()) {
-        outError = QStringLiteral("Falha ao ler arquivo DICOM para anonimizacao: %1")
-                       .arg(QString::fromLatin1(status.text()));
+    if (!file_utils::loadDicomFormatSafe(inputPath, fileFormat, outError)) {
         return false;
     }
 
@@ -105,7 +56,7 @@ bool DicomAnonymizer::anonymizeFile(const QString& inputPath,
     scrubOrRemoveTag(dataset, DCM_PatientSize);
     scrubOrRemoveTag(dataset, DCM_PatientAddress);
     scrubOrRemoveTag(dataset, DCM_PatientTelephoneNumbers);
-    scrubOrRemoveTag(dataset, DCM_RETIRED_OtherPatientIDs);
+    scrubOrRemoveTag(dataset, DcmTagKey(0x0010, 0x1000)); // OtherPatientIDs (compatível 3.6.x e 3.7.x)
     scrubOrRemoveTag(dataset, DCM_OtherPatientIDsSequence);
     scrubOrRemoveTag(dataset, DCM_OtherPatientNames);
     scrubOrRemoveTag(dataset, DCM_PatientComments);
@@ -148,10 +99,8 @@ bool DicomAnonymizer::anonymizeFile(const QString& inputPath,
     const QFileInfo outInfo(outputPath);
     QDir().mkpath(outInfo.absolutePath());
 
-    // Garante que o arquivo possa ser gravado preservando a sintaxe original
     const E_TransferSyntax originalXfer = dataset->getOriginalXfer();
     const QString tempOut = outInfo.absoluteFilePath();
-    // Cria arquivo vazio caso não exista para garantir geração de ShortPath no Windows
     {
         QFile touchFile(tempOut);
         if (!touchFile.open(QIODevice::WriteOnly)) {
@@ -161,7 +110,7 @@ bool DicomAnonymizer::anonymizeFile(const QString& inputPath,
     }
 
     const OFCondition saveStatus = fileFormat.saveFile(
-        OFFilename(toSafeLocalPath(tempOut).constData()),
+        OFFilename(file_utils::toDcmtkSafePath(tempOut).constData()),
         originalXfer);
 
     if (saveStatus.bad()) {

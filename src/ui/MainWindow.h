@@ -139,6 +139,7 @@ private:
     void updateOrientationOverlay();
     void refreshDisplayedPixmap();
     void clearMeasurements();
+    QPoint mapScenePointToOriginalPixel(const QPointF& scenePt) const;
 
     DicomLoader m_loader;
     AuditLogger m_auditLogger;

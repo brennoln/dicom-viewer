@@ -1,8 +1,6 @@
 #include "core/DicomLoader.h"
+#include "core/DicomFileUtils.h"
 
-#include <QDir>
-#include <QFile>
-#include <QFileInfo>
 #include <QTransform>
 
 #include <algorithm>
@@ -11,25 +9,19 @@
 #include <limits>
 #include <mutex>
 
-#ifdef _WIN32
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#endif
-
 #include <dcmtk/dcmdata/dcdatset.h>
 #include <dcmtk/dcmdata/dcdeftag.h>
 #include <dcmtk/dcmdata/dcdict.h>
 #include <dcmtk/dcmdata/dcfilefo.h>
-#include <dcmtk/dcmdata/dcistrmb.h>
 #include <dcmtk/dcmdata/dcrledrg.h>
 #include <dcmtk/dcmdata/dcxfer.h>
 #include <dcmtk/dcmimage/diregist.h>
 #include <dcmtk/dcmimgle/dcmimage.h>
 #include <dcmtk/dcmimgle/dipixel.h>
 #include <dcmtk/dcmjpeg/djdecode.h>
+#ifdef HAS_DCMTK_JPLS
 #include <dcmtk/dcmjpls/djdecode.h>
+#endif
 
 namespace dicom {
 
@@ -50,23 +42,6 @@ struct DicomRenderContext {
 namespace {
 
 std::once_flag g_codecsInitFlag;
-
-QByteArray toDcmtkSafePath(const QString& filePath) {
-    const QString nativePath = QDir::toNativeSeparators(filePath);
-#ifdef _WIN32
-    const std::wstring widePath = nativePath.toStdWString();
-    DWORD shortLen = ::GetShortPathNameW(widePath.c_str(), nullptr, 0);
-    if (shortLen > 0) {
-        std::wstring shortBuf(shortLen, L'\0');
-        DWORD copied = ::GetShortPathNameW(widePath.c_str(), shortBuf.data(), shortLen);
-        if (copied > 0 && copied < shortLen) {
-            shortBuf.resize(copied);
-            return QString::fromStdWString(shortBuf).toLocal8Bit();
-        }
-    }
-#endif
-    return nativePath.toLocal8Bit();
-}
 
 QString getDcmString(DcmDataset* dataset, const DcmTagKey& tag, const QString& defaultVal = QString()) {
     if (!dataset) {
@@ -325,7 +300,9 @@ bool DicomLoader::isDictionaryLoaded() {
 void DicomLoader::ensureCodecsRegistered() {
     std::call_once(g_codecsInitFlag, []() {
         DJDecoderRegistration::registerCodecs();
+#ifdef HAS_DCMTK_JPLS
         DJLSDecoderRegistration::registerCodecs();
+#endif
         DcmRLEDecoderRegistration::registerCodecs();
     });
 }
@@ -340,46 +317,8 @@ DicomImageData DicomLoader::loadFile(const QString& filePath, int frameIndex) co
         return result;
     }
 
-    const QFileInfo fileInfo(trimmedPath);
-    if (!fileInfo.exists() || !fileInfo.isFile()) {
-        result.errorMessage = QStringLiteral("O arquivo selecionado nao existe ou nao e valido: %1").arg(trimmedPath);
-        return result;
-    }
-
-    if (fileInfo.size() == 0) {
-        result.errorMessage = QStringLiteral("O arquivo selecionado esta vazio (0 bytes).");
-        return result;
-    }
-
-    constexpr qint64 kMaxDicomFileBytes = 512LL * 1024LL * 1024LL; // 512 MB
-    if (fileInfo.size() > kMaxDicomFileBytes) {
-        result.errorMessage = QStringLiteral("Arquivo excede o limite de seguranca suportado (512 MB).");
-        return result;
-    }
-
-    const QByteArray safePath = toDcmtkSafePath(fileInfo.absoluteFilePath());
     auto fileFormat = std::make_shared<DcmFileFormat>();
-    OFCondition loadStatus = fileFormat->loadFile(OFFilename(safePath.constData()));
-
-    if (loadStatus.bad()) {
-        QFile file(fileInfo.absoluteFilePath());
-        if (file.open(QIODevice::ReadOnly)) {
-            const QByteArray rawBytes = file.readAll();
-            if (!rawBytes.isEmpty()) {
-                DcmInputBufferStream stream;
-                stream.setBuffer(rawBytes.constData(), static_cast<offile_off_t>(rawBytes.size()));
-                stream.setEos();
-                fileFormat->clear();
-                fileFormat->transferInit();
-                loadStatus = fileFormat->read(stream);
-                fileFormat->transferEnd();
-            }
-        }
-    }
-
-    if (loadStatus.bad()) {
-        result.errorMessage = QStringLiteral("Falha ao ler arquivo DICOM (%1). Verifique se o arquivo e um .dcm valido.")
-                                  .arg(QString::fromLatin1(loadStatus.text()));
+    if (!file_utils::loadDicomFormatSafe(trimmedPath, *fileFormat, result.errorMessage)) {
         return result;
     }
 

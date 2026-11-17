@@ -197,6 +197,17 @@ private slots:
         QVERIFY(qAbs(distMm - 10.0) < 0.01);
         QCOMPARE(window.measurementCount(), 2); // linha + rótulo
 
+        // 5. ROI mapeada corretamente mesmo após rotação 90° + espelhamento
+        const auto tissueRoi = window.measureRoiStats(QRectF(1420.0, 2120.0, 40.0, 40.0));
+        QVERIFY(tissueRoi.valid);
+        QVERIFY2(tissueRoi.mean > 1500.0, "ROI sobre tecido apos rotacao/espelhamento deve refletir sinal alto.");
+
+        const auto bgRoi = window.measureRoiStats(QRectF(1420.0, 200.0, 40.0, 40.0));
+        QVERIFY(bgRoi.valid);
+        // Em mamografia GE (PixelPaddingRangeLimit=1060), o fundo calibrado fica <= 1060 enquanto o tecido fica > 1500
+        QVERIFY2(bgRoi.mean <= 1060.0 && bgRoi.mean < tissueRoi.mean,
+                 "ROI sobre fundo apos rotacao/espelhamento deve ser significativamente menor que sobre o tecido.");
+
         window.onClearMeasurementsTriggered();
         QCOMPARE(window.measurementCount(), 0);
     }

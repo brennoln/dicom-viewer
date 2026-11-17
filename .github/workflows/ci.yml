@@ -1,0 +1,43 @@
+name: C++17 & Qt6 CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Qt6, DCMTK, Ninja and Cppcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            ninja-build \
+            qt6-base-dev \
+            libdcmtk-dev \
+            cppcheck
+
+      - name: Configure with CMake
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build all targets (strict warnings)
+        run: cmake --build build
+
+      - name: Run all 6 automated test suites (CTest)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir build --output-on-failure -V
+
+      - name: Run static analysis (Cppcheck)
+        run: |
+          cppcheck --enable=warning,performance,portability \
+            --library=qt --std=c++17 --error-exitcode=1 \
+            --suppress=missingIncludeSystem -I src src

@@ -726,9 +726,48 @@ void MainWindow::onRoiModeToggled(bool checked) {
         : QStringLiteral("Modo Navegação ativo."));
 }
 
+QPoint MainWindow::mapScenePointToOriginalPixel(const QPointF& scenePt) const {
+    if (!m_currentData.isValid || m_currentData.width <= 0 || m_currentData.height <= 0) {
+        return QPoint(-1, -1);
+    }
+
+    const int w0 = m_currentData.width;
+    const int h0 = m_currentData.height;
+    const int dx = static_cast<int>(std::floor(scenePt.x()));
+    const int dy = static_cast<int>(std::floor(scenePt.y()));
+
+    int px = dx;
+    int py = dy;
+    switch (m_userRotationQuarterTurns % 4) {
+    case 1: // 90° horário
+        px = dy;
+        py = h0 - 1 - dx;
+        break;
+    case 2: // 180°
+        px = w0 - 1 - dx;
+        py = h0 - 1 - dy;
+        break;
+    case 3: // 270° horário
+        px = w0 - 1 - dy;
+        py = dx;
+        break;
+    default: // 0°
+        break;
+    }
+
+    if (m_userFlipHorizontal) {
+        px = w0 - 1 - px;
+    }
+
+    return QPoint(px, py);
+}
+
 double MainWindow::measureDistanceMm(const QPointF& p1, const QPointF& p2) {
-    const double dxMm = (p2.x() - p1.x()) * m_currentData.pixelSpacingX;
-    const double dyMm = (p2.y() - p1.y()) * m_currentData.pixelSpacingY;
+    const bool swappedAxes = (m_userRotationQuarterTurns % 2) != 0;
+    const double spacingX = swappedAxes ? m_currentData.pixelSpacingY : m_currentData.pixelSpacingX;
+    const double spacingY = swappedAxes ? m_currentData.pixelSpacingX : m_currentData.pixelSpacingY;
+    const double dxMm = (p2.x() - p1.x()) * spacingX;
+    const double dyMm = (p2.y() - p1.y()) * spacingY;
     const double distMm = std::hypot(dxMm, dyMm);
 
     QPen pen(QColor(0, 230, 118), 2.0);
@@ -748,17 +787,16 @@ double MainWindow::measureDistanceMm(const QPointF& p1, const QPointF& p2) {
 }
 
 RoiStatistics MainWindow::measureRoiStats(const QRectF& sceneRect) {
-    const QRect pixelRect(
-        QPoint(static_cast<int>(std::floor(sceneRect.left())),
-               static_cast<int>(std::floor(sceneRect.top()))),
-        QPoint(static_cast<int>(std::ceil(sceneRect.right())),
-               static_cast<int>(std::ceil(sceneRect.bottom()))));
+    const QRectF normRect = sceneRect.normalized();
+    const QPoint origA = mapScenePointToOriginalPixel(normRect.topLeft());
+    const QPoint origB = mapScenePointToOriginalPixel(
+        QPointF(normRect.right() - 1.0, normRect.bottom() - 1.0));
+    const QRect pixelRect = QRect(origA, origB).normalized();
     const RoiStatistics stats = DicomLoader::computeRoiStatistics(m_currentData, pixelRect);
     if (!stats.valid) {
         return stats;
     }
 
-    const QRectF normRect = sceneRect.normalized();
     QPen pen(QColor(255, 213, 79), 2.0);
     pen.setCosmetic(true);
     auto* rectItem = m_graphicsScene->addRect(normRect, pen);
@@ -1153,15 +1191,13 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                 return true;
             }
             const QPointF scenePos = m_graphicsView->mapToScene(mouseEvent->pos());
-            const int px = static_cast<int>(std::floor(scenePos.x()));
-            const int py = static_cast<int>(std::floor(scenePos.y()));
+            const QPoint origPt = mapScenePointToOriginalPixel(scenePos);
             double pixelVal = 0.0;
-            if (m_userRotationQuarterTurns == 0 && !m_userFlipHorizontal &&
-                DicomLoader::samplePixelValue(m_currentData, px, py, pixelVal)) {
+            if (DicomLoader::samplePixelValue(m_currentData, origPt.x(), origPt.y(), pixelVal)) {
                 statusBar()->showMessage(
                     QStringLiteral("Pos: (%1, %2) | Valor Calibrado: %3 | WL: %4 | WW: %5")
-                        .arg(px)
-                        .arg(py)
+                        .arg(origPt.x())
+                        .arg(origPt.y())
                         .arg(pixelVal, 0, 'f', 1)
                         .arg(m_currentData.windowCenter, 0, 'f', 1)
                         .arg(m_currentData.windowWidth, 0, 'f', 1));

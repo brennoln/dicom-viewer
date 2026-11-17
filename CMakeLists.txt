@@ -27,6 +27,8 @@ add_library(dicom_core STATIC
     src/core/AuditLogger.cpp
     src/core/DicomAnonymizer.h
     src/core/DicomAnonymizer.cpp
+    src/core/DicomFileUtils.h
+    src/core/DicomFileUtils.cpp
     src/core/DicomImageData.h
     src/core/DicomLoader.h
     src/core/DicomLoader.cpp
@@ -44,10 +46,14 @@ target_link_libraries(dicom_core PUBLIC
     DCMTK::dcmimgle
     DCMTK::dcmimage
     DCMTK::dcmjpeg
-    DCMTK::dcmjpls
     DCMTK::ofstd
     DCMTK::oflog
 )
+
+if(TARGET DCMTK::dcmjpls)
+    target_link_libraries(dicom_core PUBLIC DCMTK::dcmjpls)
+    target_compile_definitions(dicom_core PRIVATE HAS_DCMTK_JPLS=1)
+endif()
 
 # Biblioteca de Interface Gráfica (separada do main.cpp para permitir testes de GUI)
 add_library(dicom_ui STATIC
@@ -78,6 +84,10 @@ add_executable(dicom_viewer
 target_link_libraries(dicom_viewer PRIVATE
     dicom_ui
 )
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(dicom_viewer PRIVATE -Wall -Wextra -Wpedantic)
+endif()
 
 # Configuração para ocultar console extra em builds Release no Windows
 if(WIN32)
